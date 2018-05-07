@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"flag"
 	"fmt"
@@ -9,7 +10,11 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"os/signal"
 	"sync/atomic"
+	"syscall"
+	"time"
 )
 
 type transport struct {
@@ -75,19 +80,27 @@ func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 }
 
 type proxy struct {
-	target *url.URL
-	proxy  *httputil.ReverseProxy
+	target      *url.URL
+	proxy       *httputil.ReverseProxy
+	latencyFile *os.File
+	writer      *bufio.Writer
 }
 
 func (p *proxy) handle(w http.ResponseWriter, r *http.Request) {
+	s := time.Now()
 	p.proxy.ServeHTTP(w, r)
+	p.writer.WriteString(fmt.Sprintf("%d\n", time.Since(s).Nanoseconds()/1e6))
 }
 
 func newProxy(target string) *proxy {
 	url, _ := url.Parse(target)
 	p := httputil.NewSingleHostReverseProxy(url)
 	p.Transport = &transport{target: target, isAvailable: 0, shed: 0}
-	return &proxy{target: url, proxy: p}
+	f, err := os.Create("proxy_latency.csv")
+	if err != nil {
+		panic(err)
+	}
+	return &proxy{target: url, proxy: p, latencyFile: f, writer: bufio.NewWriter(f)}
 }
 
 func main() {
@@ -106,7 +119,23 @@ func main() {
 	// proxy
 	proxy := newProxy(*redirectURL)
 
+	signal_chan := make(chan os.Signal, 1)
+	signal.Notify(signal_chan,
+		syscall.SIGHUP,
+		syscall.SIGINT,
+		syscall.SIGTERM,
+		syscall.SIGQUIT)
+
 	// server redirection
-	http.HandleFunc("/", proxy.handle)
-	log.Fatal(http.ListenAndServe(":"+*port, nil))
+	go func() {
+		http.HandleFunc("/", proxy.handle)
+		log.Fatal(http.ListenAndServe(":"+*port, nil))
+	}()
+
+	<-signal_chan
+
+	proxy.writer.Flush()
+	if err := proxy.latencyFile.Close(); err != nil {
+		panic(err)
+	}
 }
