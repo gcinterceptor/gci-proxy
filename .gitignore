@@ -2,4 +2,5 @@
 *.swp
 *.iml
 .idea/
-./gci-proxy
+gci-proxy
+nohup.out
