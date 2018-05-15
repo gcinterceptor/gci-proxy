@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"flag"
 	"fmt"
@@ -11,12 +10,10 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"os"
-	"os/signal"
-	"runtime"
 	"sync/atomic"
-	"syscall"
 	"time"
+
+	"github.com/julienschmidt/httprouter"
 )
 
 type transport struct {
@@ -39,50 +36,59 @@ func shedResponse(req *http.Request) *http.Response {
 	}
 }
 
+var transportClient = &http.Transport{
+	Dial: (&net.Dialer{
+		Timeout: 5 * time.Second,
+	}).Dial,
+	TLSHandshakeTimeout: 5 * time.Second,
+}
+var client = &http.Client{
+	Timeout:   time.Second * 5,
+	Transport: transportClient,
+}
+
 func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 	if request.Body != nil {
-		ioutil.ReadAll(request.Body)
-		request.Body.Close()
+		buf, err := ioutil.ReadAll(request.Body)
+		if err != nil {
+			panic(err)
+		}
+		request.Body = ioutil.NopCloser(bytes.NewBuffer(buf))
 	}
 	if atomic.LoadInt32(&t.isAvailable) == 1 {
+		if request != nil && request.Body != nil {
+			request.Body.Close()
+		}
 		atomic.AddUint64(&t.shed, 1)
 		return shedResponse(request), nil
 	}
-	response, err := http.DefaultTransport.RoundTrip(request)
+	response, err := transportClient.RoundTrip(request)
 	if err != nil {
 		fmt.Printf("Err: %q\n", err)
 		return nil, err
 	}
-	response.Body.Close()
 
 	if atomic.LoadInt32(&t.isAvailable) == 0 && response.StatusCode == http.StatusServiceUnavailable {
 		atomic.StoreInt32(&t.isAvailable, 1)
-		// This call will block until the service is fully available.
 		go func() {
 			defer func() {
 				atomic.StoreInt32(&t.isAvailable, 0)
 			}()
 			req, err := http.NewRequest("GET", fmt.Sprintf("%s/", t.target), nil)
 			if err != nil {
-				// TODO: This should kill the server. It is a situation that GCI can not cope right now.
-				fmt.Println("Err trying to build gc request: %q", err)
-				return
+				panic(fmt.Sprintf("Err trying to build gc request: %q\n", err))
 			}
-			// Use previous number of shed requests.
 			req.Header.Set("GCI", fmt.Sprintf("/%d", atomic.LoadUint64(&t.shed)))
-			// Setup for collecting the number of shed requests.
 			atomic.StoreUint64(&t.shed, 0)
-
-			// TODO: Stop using http.DefaultClient
-			// https://medium.com/@nate510/don-t-use-go-s-default-http-client-4804cb19f779
-			// TODO: Also check status codes.
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := client.Do(req)
 			if err != nil {
-				// TODO: This should kill the server. It is a situation that GCI can not cope right now.
-				fmt.Println("Err trying to trigger gc: %q", err)
-				return
+				panic(fmt.Sprintf("Err trying to trigger gc:%q\n", err))
+			}
+			if resp.StatusCode != http.StatusOK {
+				panic(fmt.Sprintf("Err trying to trigger status:%v\n", resp.StatusCode))
 			}
 			if resp != nil {
+				ioutil.ReadAll(resp.Body)
 				resp.Body.Close()
 			}
 		}()
@@ -92,62 +98,22 @@ func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 }
 
 type proxy struct {
-	target      *url.URL
-	proxy       *httputil.ReverseProxy
-	latencyFile *os.File
-	writer      *bufio.Writer
+	target *url.URL
+	proxy  *httputil.ReverseProxy
 }
 
 func (p *proxy) handle(w http.ResponseWriter, r *http.Request) {
-	s := time.Now()
 	p.proxy.ServeHTTP(w, r)
-	p.writer.WriteString(fmt.Sprintf("%d\n", time.Since(s).Nanoseconds()/1e6))
 }
 
 func newProxy(target string) *proxy {
 	url, _ := url.Parse(target)
 	p := httputil.NewSingleHostReverseProxy(url)
 	p.Transport = &transport{target: target, isAvailable: 0, shed: 0}
-	f, err := os.Create("proxy_latency.csv")
-	if err != nil {
-		panic(err)
-	}
-	return &proxy{target: url, proxy: p, latencyFile: f, writer: bufio.NewWriter(f)}
-}
-
-func NewBoundListener(maxActive int, l net.Listener) net.Listener {
-	return &boundListener{l, make(chan bool, maxActive)}
-}
-
-type boundListener struct {
-	net.Listener
-	active chan bool
-}
-
-type boundConn struct {
-	net.Conn
-	active chan bool
-}
-
-func (l *boundListener) Accept() (net.Conn, error) {
-	l.active <- true
-	c, err := l.Listener.Accept()
-	if err != nil {
-		<-l.active
-		return nil, err
-	}
-	return &boundConn{c, l.active}, err
-}
-
-func (l *boundConn) Close() error {
-	err := l.Conn.Close()
-	<-l.active
-	return err
+	return &proxy{target: url, proxy: p}
 }
 
 func main() {
-	runtime.GOMAXPROCS(1)
-
 	const (
 		defaultPort        = "3000"
 		defaultPortUsage   = "default server port, '3000'"
@@ -160,30 +126,9 @@ func main() {
 	redirectURL := flag.String("url", defaultTarget, defaultTargetUsage)
 	flag.Parse()
 
-	// proxy
 	proxy := newProxy(*redirectURL)
 
-	signal_chan := make(chan os.Signal, 1)
-	signal.Notify(signal_chan,
-		syscall.SIGHUP,
-		syscall.SIGINT,
-		syscall.SIGTERM,
-		syscall.SIGQUIT)
-
-	// server redirection
-	go func() {
-		l, err := net.Listen("tcp", ":"+*port)
-		if err != nil {
-			log.Fatal(err)
-		}
-		http.HandleFunc("/", proxy.handle)
-		http.Serve(NewBoundListener(1, l), http.DefaultServeMux)
-	}()
-
-	<-signal_chan
-
-	proxy.writer.Flush()
-	if err := proxy.latencyFile.Close(); err != nil {
-		panic(err)
-	}
+	router := httprouter.New()
+	router.HandlerFunc("GET", "/", proxy.handle)
+	log.Fatal(http.ListenAndServe(":"+*port, router))
 }
