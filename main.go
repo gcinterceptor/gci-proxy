@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -20,6 +21,7 @@ type transport struct {
 	isAvailable int32
 	shed        uint64
 	target      string
+	inflight    sync.WaitGroup
 }
 
 func shedResponse(req *http.Request) *http.Response {
@@ -62,6 +64,10 @@ func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 		atomic.AddUint64(&t.shed, 1)
 		return shedResponse(request), nil
 	}
+	t.inflight.Add(1)
+	defer func() {
+		t.inflight.Done()
+	}()
 	response, err := transportClient.RoundTrip(request)
 	if err != nil {
 		fmt.Printf("Err: %q\n", err)
@@ -69,30 +75,36 @@ func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 	}
 
 	if atomic.LoadInt32(&t.isAvailable) == 0 && response.StatusCode == http.StatusServiceUnavailable {
-		atomic.StoreInt32(&t.isAvailable, 1)
-		go func() {
-			defer func() {
-				atomic.StoreInt32(&t.isAvailable, 0)
+		if atomic.CompareAndSwapInt32(&t.isAvailable, 0, 1) {
+			go func() {
+				defer func() {
+					atomic.StoreInt32(&t.isAvailable, 0)
+				}()
+				t.inflight.Wait()
+
+				req, err := http.NewRequest("GET", fmt.Sprintf("%s/", t.target), nil)
+				if err != nil {
+					panic(fmt.Sprintf("Err trying to build gc request: %q\n", err))
+				}
+				req.Header.Set("GCI", fmt.Sprintf("/%d", atomic.LoadUint64(&t.shed)))
+				atomic.StoreUint64(&t.shed, 0)
+				resp, err := client.Do(req)
+				if err != nil {
+					panic(fmt.Sprintf("Err trying to trigger gc:%q\n", err))
+				}
+				if resp.StatusCode != http.StatusOK {
+					panic(fmt.Sprintf("Err trying to trigger status:%v\n", resp.StatusCode))
+				}
+				if resp != nil {
+					ioutil.ReadAll(resp.Body)
+					resp.Body.Close()
+				}
 			}()
-			req, err := http.NewRequest("GET", fmt.Sprintf("%s/", t.target), nil)
-			if err != nil {
-				panic(fmt.Sprintf("Err trying to build gc request: %q\n", err))
-			}
-			req.Header.Set("GCI", fmt.Sprintf("/%d", atomic.LoadUint64(&t.shed)))
-			atomic.StoreUint64(&t.shed, 0)
-			resp, err := client.Do(req)
-			if err != nil {
-				panic(fmt.Sprintf("Err trying to trigger gc:%q\n", err))
-			}
-			if resp.StatusCode != http.StatusOK {
-				panic(fmt.Sprintf("Err trying to trigger status:%v\n", resp.StatusCode))
-			}
-			if resp != nil {
-				ioutil.ReadAll(resp.Body)
-				resp.Body.Close()
-			}
-		}()
-		return response, nil
+		}
+	}
+	// Requests shed by the JVM.
+	if response.StatusCode == http.StatusServiceUnavailable {
+		atomic.AddUint64(&t.shed, 1)
 	}
 	return response, nil
 }
