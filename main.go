@@ -93,7 +93,7 @@ func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 					panic(fmt.Sprintf("Err trying to trigger gc:%q\n", err))
 				}
 				if resp.StatusCode != http.StatusOK {
-					panic(fmt.Sprintf("Err trying to trigger status:%v\n", resp.StatusCode))
+					panic(fmt.Sprintf("GC trigger returned status code which is no OK:%v\n", resp.StatusCode))
 				}
 				if resp != nil {
 					ioutil.ReadAll(resp.Body)
