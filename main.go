@@ -34,8 +34,8 @@ func (g generation) string() string {
 }
 
 const (
-	youngGen    generation = "gen1"
-	tenduredGen generation = "gen2"
+	gen1 generation = "gen1"
+	gen2 generation = "gen2"
 )
 
 type transport struct {
@@ -126,16 +126,16 @@ func (t *transport) checkHeap() {
 		panic(fmt.Sprintf("Could not convert usedGen1 size to number: %q", err))
 	}
 	if usedGen1 > t.stGen1.value() {
-		go t.gc(youngGen)
+		t.gc(gen1)
 		return
 	}
 	if len(hs) > 1 {
 		usedGen2, err := strconv.ParseInt(hs[1], 10, 64)
 		if err != nil {
-			panic(fmt.Sprintf("Could not convert usedGen1 size to number: %q", err))
+			panic(fmt.Sprintf("Could not convert usedGen2 size to number: %q", err))
 		}
 		if usedGen2 > t.stGen2.value() {
-			go t.gc(youngGen)
+			t.gc(gen2)
 			return
 		}
 	}
