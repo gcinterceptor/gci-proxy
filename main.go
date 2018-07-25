@@ -96,22 +96,10 @@ func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 		atomic.AddUint64(&t.numReqFinished, 1)
 		t.inflightWaiter.Done()
 	}()
-	response, err := transportClient.RoundTrip(request)
-	if err != nil {
-		fmt.Printf("Err: %q\n", err)
-		return nil, err
-	}
-
-	// Is it time to check the heap?
-	if nArrived%t.window.size() == 0 {
+	if nArrived%t.window.size() == 0 { // Is it time to check the heap?
 		go t.checkHeap()
 	}
-
-	// Requests shed by the JVM.
-	if response.StatusCode == http.StatusServiceUnavailable {
-		atomic.AddUint64(&t.shed, 1)
-	}
-	return response, nil
+	return transportClient.RoundTrip(request)
 }
 
 func (t *transport) checkHeap() {
