@@ -231,7 +231,6 @@ func (s *sampleWindow) update(finished uint64) {
 	}
 	sw := uint64(min)
 	if min > 0 {
-
 		if sw > maxSampleSize {
 			sw = maxSampleSize
 		}
