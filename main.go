@@ -104,44 +104,7 @@ func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 
 	// Is it time to check the heap?
 	if nArrived%t.window.size() == 0 {
-		go func() {
-			req, err := http.NewRequest("GET", fmt.Sprintf("%s/", t.target), nil)
-			if err != nil {
-				panic(fmt.Sprintf("Err trying to build heap check request: %q\n", err))
-			}
-			req.Header.Set(gciHeader, heapCheckHeader)
-			resp, err := client.Do(req)
-			if err != nil {
-				panic(fmt.Sprintf("Err trying to check heap:%q\n", err))
-			}
-			if resp.StatusCode != http.StatusOK {
-				panic(fmt.Sprintf("Heap check returned status code which is no OK:%v\n", resp.StatusCode))
-			}
-			b, err := ioutil.ReadAll(resp.Body)
-			if err != nil {
-				panic(fmt.Sprintf("Could not read check heap response: %q", err))
-			}
-			resp.Body.Close()
-			hs := strings.Split(string(b), genSeparator)
-			usedGen1, err := strconv.ParseInt(hs[0], 10, 64)
-			if err != nil {
-				panic(fmt.Sprintf("Could not convert usedGen1 size to number: %q", err))
-			}
-			if usedGen1 > t.stGen1.value() {
-				go t.gc(youngGen)
-				return
-			}
-			if len(hs) > 1 {
-				usedGen2, err := strconv.ParseInt(hs[1], 10, 64)
-				if err != nil {
-					panic(fmt.Sprintf("Could not convert usedGen1 size to number: %q", err))
-				}
-				if usedGen2 > t.stGen2.value() {
-					go t.gc(youngGen)
-					return
-				}
-			}
-		}()
+		go t.checkHeap()
 	}
 
 	// Requests shed by the JVM.
@@ -149,6 +112,45 @@ func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 		atomic.AddUint64(&t.shed, 1)
 	}
 	return response, nil
+}
+
+func (t *transport) checkHeap() {
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/", t.target), nil)
+	if err != nil {
+		panic(fmt.Sprintf("Err trying to build heap check request: %q\n", err))
+	}
+	req.Header.Set(gciHeader, heapCheckHeader)
+	resp, err := client.Do(req)
+	if err != nil {
+		panic(fmt.Sprintf("Err trying to check heap:%q\n", err))
+	}
+	if resp.StatusCode != http.StatusOK {
+		panic(fmt.Sprintf("Heap check returned status code which is no OK:%v\n", resp.StatusCode))
+	}
+	b, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		panic(fmt.Sprintf("Could not read check heap response: %q", err))
+	}
+	resp.Body.Close()
+	hs := strings.Split(string(b), genSeparator)
+	usedGen1, err := strconv.ParseInt(hs[0], 10, 64)
+	if err != nil {
+		panic(fmt.Sprintf("Could not convert usedGen1 size to number: %q", err))
+	}
+	if usedGen1 > t.stGen1.value() {
+		go t.gc(youngGen)
+		return
+	}
+	if len(hs) > 1 {
+		usedGen2, err := strconv.ParseInt(hs[1], 10, 64)
+		if err != nil {
+			panic(fmt.Sprintf("Could not convert usedGen1 size to number: %q", err))
+		}
+		if usedGen2 > t.stGen2.value() {
+			go t.gc(youngGen)
+			return
+		}
+	}
 }
 
 func (t *transport) gc(gen generation) {
