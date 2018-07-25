@@ -81,37 +81,95 @@ func TestProxyHandle(t *testing.T) {
 	}
 }
 
-func TestCheckHeapSize(t *testing.T) {
-	var wg sync.WaitGroup
-	gotGCIHeapCheck := false
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(gciHeader) == heapCheckHeader {
-			fmt.Fprintf(w, "%d", 1)
-			gotGCIHeapCheck = true
-		}
-		wg.Done()
-	}))
-	defer target.Close()
+func TestTransport_CheckHeapSize(t *testing.T) {
+	data := []struct {
+		msg      string
+		response string
+	}{
+		{"onlyGen1", "1"},
+		{"bothGens", fmt.Sprintf("1%s1", genSeparator)},
+	}
+	for _, d := range data {
+		t.Run(d.msg, func(t *testing.T) {
+			var wg sync.WaitGroup
+			gotGCIHeapCheck := false
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get(gciHeader) == heapCheckHeader {
+					fmt.Fprintf(w, d.response)
+					gotGCIHeapCheck = true
+				}
+				wg.Done()
+			}))
+			defer target.Close()
 
-	p := newProxy(target.URL, 1024, 1024)
+			server := proxyServer(target.URL, 1024, 1024)
+			defer server.Close()
 
+			fireReqs(t, &wg, server.URL)
+
+			if !gotGCIHeapCheck {
+				t.Errorf("check cheader not set")
+			}
+		})
+	}
+}
+
+func TestTransport_GC(t *testing.T) {
+	data := []struct {
+		msg      string
+		response string
+		gen      string
+	}{
+		{"gen1", "1024", gen1.string()},
+		{"gen2", fmt.Sprintf("1%s1024", genSeparator), gen2.string()},
+		{"bothGens_gcGen1", fmt.Sprintf("1024%s1024", genSeparator), gen1.string()},
+	}
+	for _, d := range data {
+		t.Run(d.msg, func(t *testing.T) {
+			var wg sync.WaitGroup
+			gcRan := false
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get(gciHeader) == heapCheckHeader {
+					fmt.Fprintf(w, d.response)
+				}
+				if r.Header.Get(gciHeader) == d.gen {
+					gcRan = true
+				}
+				wg.Done()
+			}))
+			defer target.Close()
+
+			server := proxyServer(target.URL, 1024, 1024)
+			defer server.Close()
+
+			wg.Add(1)
+			fireReqs(t, &wg, server.URL)
+
+			if !gcRan {
+				t.Errorf("check cheader not set")
+			}
+		})
+	}
+}
+
+func proxyServer(target string, gen1, gen2 int64) *httptest.Server {
+	p := newProxy(target, gen1, gen2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p.handle(w, r)
 	}))
-	defer server.Close()
+	return server
+}
 
+func fireReqs(t *testing.T, wg *sync.WaitGroup, url string) {
 	wg.Add(1) // heap check.
 	for i := uint64(0); i < defaultSampleSize; i++ {
 		wg.Add(1)
-		_, err := http.Get(server.URL)
+		_, err := http.Get(url)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
 	wg.Wait()
-	if !gotGCIHeapCheck {
-		t.Errorf("check cheader not set")
-	}
 }
 
 func BenchmarkProxyHandle(b *testing.B) {
