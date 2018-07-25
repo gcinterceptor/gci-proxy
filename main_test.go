@@ -9,33 +9,6 @@ import (
 	"testing"
 )
 
-func TestProxyHandle(t *testing.T) {
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "Hello, client")
-	}))
-	defer target.Close()
-
-	p := newProxy(target.URL)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p.handle(w, r)
-	}))
-	defer server.Close()
-
-	res, err := http.Get(server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	str, err := ioutil.ReadAll(res.Body)
-	res.Body.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(str) != "Hello, client" {
-		t.Errorf("want:\"Hello, client\" got:\"%s\"", string(str))
-	}
-}
-
 func TestSheddingThreshold(t *testing.T) {
 	seed := int64(25)
 	yGen := int64(1024)
@@ -81,6 +54,34 @@ func TestSampleWindow_Update(t *testing.T) {
 		t.Errorf("sw.size() want:2 got:%d [history:%v]", sw.size(), sw.history)
 	}
 }
+
+func TestProxyHandle(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "Hello, client")
+	}))
+	defer target.Close()
+
+	p := newProxy(target.URL, 1024, 1024)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p.handle(w, r)
+	}))
+	defer server.Close()
+
+	res, err := http.Get(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	str, err := ioutil.ReadAll(res.Body)
+	res.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(str) != "Hello, client" {
+		t.Errorf("want:\"Hello, client\" got:\"%s\"", string(str))
+	}
+}
+
 func TestCheckHeapSize(t *testing.T) {
 	var wg sync.WaitGroup
 	gotGCIHeapCheck := false
@@ -93,7 +94,7 @@ func TestCheckHeapSize(t *testing.T) {
 	}))
 	defer target.Close()
 
-	p := newProxy(target.URL)
+	p := newProxy(target.URL, 1024, 1024)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p.handle(w, r)
@@ -120,7 +121,7 @@ func BenchmarkProxyHandle(b *testing.B) {
 	}))
 	defer target.Close()
 
-	p := newProxy(target.URL)
+	p := newProxy(target.URL, 1024, 1024)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p.handle(w, r)

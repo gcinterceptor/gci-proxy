@@ -13,6 +13,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,8 +22,20 @@ import (
 )
 
 const (
-	gciHeader       = "gcih"
+	gciHeader       = "gci"
 	heapCheckHeader = "ch"
+	genSeparator    = "|"
+)
+
+type generation string
+
+func (g generation) string() string {
+	return string(g)
+}
+
+const (
+	youngGen    generation = "gen1"
+	tenduredGen generation = "gen2"
 )
 
 type transport struct {
@@ -32,8 +45,8 @@ type transport struct {
 	inflightWaiter sync.WaitGroup
 	numReqArrived  uint64
 	numReqFinished uint64
-	heapSize       uint64
 	window         sampleWindow
+	st             sheddingThreshold
 }
 
 func shedResponse(req *http.Request) *http.Response {
@@ -108,43 +121,28 @@ func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 				panic(fmt.Sprintf("Could not read check heap response: %q", err))
 			}
 			resp.Body.Close()
-			hs, err := strconv.ParseUint(string(b), 10, 64)
+			hs := strings.Split(string(b), genSeparator)
+			usedGen1, err := strconv.ParseInt(hs[0], 10, 64)
 			if err != nil {
-				panic(fmt.Sprintf("Could not convert heap size to number: %q", err))
+				panic(fmt.Sprintf("Could not convert usedGen1 size to number: %q", err))
 			}
-			atomic.StoreUint64(&t.heapSize, hs)
+			if usedGen1 > t.st.young() {
+				go t.gc(youngGen)
+				return
+			}
+			if len(hs) > 1 {
+				usedGen2, err := strconv.ParseInt(hs[1], 10, 64)
+				if err != nil {
+					panic(fmt.Sprintf("Could not convert usedGen1 size to number: %q", err))
+				}
+				if usedGen2 > t.st.tenured() {
+					go t.gc(youngGen)
+					return
+				}
+			}
 		}()
 	}
 
-	if atomic.LoadInt32(&t.isAvailable) == 0 && response.StatusCode == http.StatusServiceUnavailable {
-		if atomic.CompareAndSwapInt32(&t.isAvailable, 0, 1) {
-			go func() {
-				defer func() {
-					atomic.StoreInt32(&t.isAvailable, 0)
-				}()
-				t.inflightWaiter.Wait()
-				t.window.update(atomic.LoadUint64(&t.numReqFinished))
-
-				req, err := http.NewRequest("GET", fmt.Sprintf("%s/", t.target), nil)
-				if err != nil {
-					panic(fmt.Sprintf("Err trying to build gc request: %q\n", err))
-				}
-				req.Header.Set("GCI", fmt.Sprintf("/%d", atomic.LoadUint64(&t.shed)))
-				atomic.StoreUint64(&t.shed, 0)
-				resp, err := client.Do(req)
-				if err != nil {
-					panic(fmt.Sprintf("Err trying to trigger gc:%q\n", err))
-				}
-				if resp.StatusCode != http.StatusOK {
-					panic(fmt.Sprintf("GC trigger returned status code which is no OK:%v\n", resp.StatusCode))
-				}
-				if resp != nil {
-					ioutil.ReadAll(resp.Body)
-					resp.Body.Close()
-				}
-			}()
-		}
-	}
 	// Requests shed by the JVM.
 	if response.StatusCode == http.StatusServiceUnavailable {
 		atomic.AddUint64(&t.shed, 1)
@@ -152,6 +150,33 @@ func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 	return response, nil
 }
 
+func (t *transport) gc(gen generation) {
+	defer func() {
+		atomic.StoreInt32(&t.isAvailable, 0)
+	}()
+	t.inflightWaiter.Wait()
+	t.window.update(atomic.LoadUint64(&t.numReqFinished))
+
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/", t.target), nil)
+	if err != nil {
+		panic(fmt.Sprintf("Err trying to build gc request: %q\n", err))
+	}
+	req.Header.Set(gciHeader, gen.string())
+	atomic.StoreUint64(&t.shed, 0)
+	resp, err := client.Do(req)
+	if err != nil {
+		panic(fmt.Sprintf("Err trying to trigger gc:%q\n", err))
+	}
+	if resp.StatusCode != http.StatusOK {
+		panic(fmt.Sprintf("GC trigger returned status code which is no OK:%v\n", resp.StatusCode))
+	}
+	if resp != nil {
+		ioutil.ReadAll(resp.Body)
+		resp.Body.Close()
+	}
+}
+
+////////// PROXY
 type proxy struct {
 	target *url.URL
 	proxy  *httputil.ReverseProxy
@@ -161,15 +186,19 @@ func (p *proxy) handle(w http.ResponseWriter, r *http.Request) {
 	p.proxy.ServeHTTP(w, r)
 }
 
-func newProxy(target string) *proxy {
+func newProxy(target string, yGen, tGen int64) *proxy {
 	url, _ := url.Parse(target)
 	p := httputil.NewSingleHostReverseProxy(url)
-	p.Transport = newTransport(target)
+	p.Transport = newTransport(target, yGen, tGen)
 	return &proxy{target: url, proxy: p}
 }
 
-func newTransport(target string) *transport {
-	return &transport{target: target, window: newSampleWindow()}
+func newTransport(target string, yGen, tGen int64) *transport {
+	return &transport{
+		target: target,
+		window: newSampleWindow(),
+		st:     newSheddingThreshold(time.Now().UnixNano(), yGen, tGen),
+	}
 }
 
 func main() {
@@ -183,9 +212,11 @@ func main() {
 	// flags
 	port := flag.String("port", defaultPort, defaultPortUsage)
 	redirectURL := flag.String("url", defaultTarget, defaultTargetUsage)
+	yGen := flag.Int64("ygen", 0, "Invalid young generation size.")
+	tGen := flag.Int64("tgen", 0, "Invalid tenured generation size.")
 	flag.Parse()
 
-	proxy := newProxy(*redirectURL)
+	proxy := newProxy(*redirectURL, *yGen, *tGen)
 
 	router := httprouter.New()
 	router.HandlerFunc("GET", "/", proxy.handle)
