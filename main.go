@@ -46,7 +46,8 @@ type transport struct {
 	numReqArrived  uint64
 	numReqFinished uint64
 	window         sampleWindow
-	st             sheddingThreshold
+	stGen1         sheddingThreshold
+	stGen2         sheddingThreshold
 }
 
 func shedResponse(req *http.Request) *http.Response {
@@ -126,7 +127,7 @@ func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 			if err != nil {
 				panic(fmt.Sprintf("Could not convert usedGen1 size to number: %q", err))
 			}
-			if usedGen1 > t.st.young() {
+			if usedGen1 > t.stGen1.value() {
 				go t.gc(youngGen)
 				return
 			}
@@ -135,7 +136,7 @@ func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 				if err != nil {
 					panic(fmt.Sprintf("Could not convert usedGen1 size to number: %q", err))
 				}
-				if usedGen2 > t.st.tenured() {
+				if usedGen2 > t.stGen2.value() {
 					go t.gc(youngGen)
 					return
 				}
@@ -197,7 +198,8 @@ func newTransport(target string, yGen, tGen int64) *transport {
 	return &transport{
 		target: target,
 		window: newSampleWindow(),
-		st:     newSheddingThreshold(time.Now().UnixNano(), yGen, tGen),
+		stGen1: newSheddingThreshold(time.Now().UnixNano(), yGen),
+		stGen2: newSheddingThreshold(time.Now().UnixNano(), tGen),
 	}
 }
 
@@ -233,31 +235,22 @@ const (
 )
 
 type sheddingThreshold struct {
-	r                                *rand.Rand
-	maxYGen, minYGen, yGen, yEntropy int64
-	maxTGen, minTGen, tGen, tEntropy int64
+	r                      *rand.Rand
+	max, min, val, entropy int64
 }
 
-func newSheddingThreshold(seed int64, yGen, tGen int64) sheddingThreshold {
+func newSheddingThreshold(seed, genSize int64) sheddingThreshold {
 	return sheddingThreshold{
-		r:        rand.New(rand.NewSource(seed)),
-		maxYGen:  int64(maxFraction * float64(yGen)),
-		minYGen:  int64(minFraction * float64(yGen)),
-		yGen:     int64(startFraction * float64(yGen)),
-		yEntropy: int64(entropyFraction * float64(yGen)),
-		maxTGen:  int64(maxFraction * float64(tGen)),
-		minTGen:  int64(minFraction * float64(tGen)),
-		tGen:     int64(startFraction * float64(tGen)),
-		tEntropy: int64(entropyFraction * float64(tGen)),
+		r:       rand.New(rand.NewSource(seed)),
+		max:     int64(maxFraction * float64(genSize)),
+		min:     int64(minFraction * float64(genSize)),
+		val:     int64(startFraction * float64(genSize)),
+		entropy: int64(entropyFraction * float64(genSize)),
 	}
 }
 
-func (st *sheddingThreshold) tenured() int64 {
-	return getThreshold(st.r, st.tGen, st.maxTGen, st.minTGen, st.tEntropy)
-}
-
-func (st *sheddingThreshold) young() int64 {
-	return getThreshold(st.r, st.yGen, st.maxYGen, st.minYGen, st.yEntropy)
+func (st *sheddingThreshold) value() int64 {
+	return getThreshold(st.r, st.val, st.max, st.min, st.entropy)
 }
 
 func getThreshold(r *rand.Rand, val, max, min, entropy int64) int64 {
