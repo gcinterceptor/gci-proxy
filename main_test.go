@@ -36,6 +36,29 @@ func TestProxyHandle(t *testing.T) {
 	}
 }
 
+func TestSheddingThreshold(t *testing.T) {
+	seed := int64(25)
+	yGen := int64(1024)
+	tGen := int64(2048)
+	st := newSheddingThreshold(seed, yGen, tGen)
+
+	// With this seed, the first sign is negative and the random is 0.8961363003854933.
+	entropy := int64(entropyFraction * float64(yGen))
+	want := int64((startFraction * float64(yGen)) - (float64(entropy) * 0.8961363003854933))
+	got := st.young()
+	if got < want-1 || got > want+1 { // accept rounding errors.
+		t.Errorf("young ST - got:%d want:%d [entropy:%d st.yEntropy:%d st.yGen:%d]", got, want, entropy, st.yEntropy, st.yGen)
+	}
+
+	// With this seed, the next sign is positive and the random is 0.23406078193324906.
+	entropy = int64(entropyFraction * float64(tGen))
+	want = int64((startFraction * float64(tGen)) + (float64(entropy) * 0.23406078193324906))
+	got = st.tenured()
+	if got < want-1 || got > want+1 { // accept rounding errors.
+		t.Errorf("tenured ST - got:%d want:%d [entropy:%d st.tEntropy:%d st.tGen:%d]", got, want, entropy, st.tEntropy, st.tGen)
+	}
+}
+
 func TestSampleWindow_Update(t *testing.T) {
 	sw := newSampleWindow()
 	if sw.size() != defaultSampleSize {

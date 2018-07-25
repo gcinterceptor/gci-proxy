@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"log"
 	"math"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -189,6 +190,63 @@ func main() {
 	router := httprouter.New()
 	router.HandlerFunc("GET", "/", proxy.handle)
 	log.Fatal(http.ListenAndServe(":"+*port, router))
+}
+
+////////// SHEDDING THRESHOLD
+const (
+	// We currently have room for increase/decrease the entropy three times in a row.
+	maxFraction     = 0.85
+	startFraction   = 0.7
+	entropyFraction = 0.05
+	minFraction     = 0.55
+)
+
+type sheddingThreshold struct {
+	r                                *rand.Rand
+	maxYGen, minYGen, yGen, yEntropy int64
+	maxTGen, minTGen, tGen, tEntropy int64
+}
+
+func newSheddingThreshold(seed int64, yGen, tGen int64) sheddingThreshold {
+	return sheddingThreshold{
+		r:        rand.New(rand.NewSource(seed)),
+		maxYGen:  int64(maxFraction * float64(yGen)),
+		minYGen:  int64(minFraction * float64(yGen)),
+		yGen:     int64(startFraction * float64(yGen)),
+		yEntropy: int64(entropyFraction * float64(yGen)),
+		maxTGen:  int64(maxFraction * float64(tGen)),
+		minTGen:  int64(minFraction * float64(tGen)),
+		tGen:     int64(startFraction * float64(tGen)),
+		tEntropy: int64(entropyFraction * float64(tGen)),
+	}
+}
+
+func (st *sheddingThreshold) tenured() int64 {
+	return getThreshold(st.r, st.tGen, st.maxTGen, st.minTGen, st.tEntropy)
+}
+
+func (st *sheddingThreshold) young() int64 {
+	return getThreshold(st.r, st.yGen, st.maxYGen, st.minYGen, st.yEntropy)
+}
+
+func getThreshold(r *rand.Rand, val, max, min, entropy int64) int64 {
+	e := int64(r.Float64() * float64(entropy))
+	candidate := val + (randomSign(r) * e)
+	if candidate > max {
+		return max - e
+	}
+	if candidate < min {
+		return min + e
+	}
+	return candidate
+}
+
+func randomSign(r *rand.Rand) int64 {
+	n := r.Float64()
+	if n < 0.5 {
+		return -1
+	}
+	return 1
 }
 
 ////////// SAMPLE WINDOW
