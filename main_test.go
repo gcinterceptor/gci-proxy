@@ -36,6 +36,28 @@ func TestProxyHandle(t *testing.T) {
 	}
 }
 
+func TestSampleWindow_Update(t *testing.T) {
+	sw := newSampleWindow()
+	if sw.size() != defaultSampleSize {
+		t.Errorf("sw.size() want:%d got:%d", defaultSampleSize, sw.size())
+	}
+	for i := 0; i < sampleHistorySize; i++ {
+		sw.update(uint64(i))
+		if sw.size() != 0 {
+			t.Errorf("sw.size() want:0 got:%d [index:%d history:%v]", sw.size(), i, sw.history)
+		}
+	}
+	// At this point the 0 is the oldest in the history, the next min is 1.
+	sw.update(uint64(3))
+	if sw.size() != 1 {
+		t.Errorf("sw.size() want:1 got:%d [history:%v]", sw.size(), sw.history)
+	}
+	// At this point the 1 is the oldest in the history, the next min is 2.
+	sw.update(uint64(3))
+	if sw.size() != 2 {
+		t.Errorf("sw.size() want:2 got:%d [history:%v]", sw.size(), sw.history)
+	}
+}
 func TestCheckHeapSize(t *testing.T) {
 	var wg sync.WaitGroup
 	gotGCIHeapCheck := false
