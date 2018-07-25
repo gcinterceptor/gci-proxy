@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,11 +19,32 @@ import (
 	"github.com/julienschmidt/httprouter"
 )
 
+const (
+	// Default sample size should be fairly small, so big requests get checked up quickly.
+	defaultSampleSize = uint64(64)
+	// Max sample size can not be very big because of peaks.
+	// The algorithm is fairly conservative, but we never know.
+	maxSampleSize = uint64(512)
+	// As load changes a lot, the history size does not need to be big.
+	sampleHistorySize = 5
+)
+
+const (
+	gciHeader       = "gcih"
+	heapCheckHeader = "ch"
+)
+
 type transport struct {
-	isAvailable int32
-	shed        uint64
-	target      string
-	inflight    sync.WaitGroup
+	isAvailable        int32
+	shed               uint64
+	target             string
+	inflightWaiter     sync.WaitGroup
+	numReqArrived      uint64
+	numReqFinished     uint64
+	sampleSize         uint64
+	sampleHistory      [sampleHistorySize]uint64
+	sampleHistoryIndex int
+	heapSize           uint64
 }
 
 func shedResponse(req *http.Request) *http.Response {
@@ -64,14 +87,44 @@ func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 		atomic.AddUint64(&t.shed, 1)
 		return shedResponse(request), nil
 	}
-	t.inflight.Add(1)
+	t.numReqArrived++
+	t.inflightWaiter.Add(1)
 	defer func() {
-		t.inflight.Done()
+		t.inflightWaiter.Done()
+		t.numReqFinished++
 	}()
 	response, err := transportClient.RoundTrip(request)
 	if err != nil {
 		fmt.Printf("Err: %q\n", err)
 		return nil, err
+	}
+
+	// Is it time to check the heap?
+	if t.numReqArrived%atomic.LoadUint64(&t.sampleSize) == 0 {
+		go func() {
+			req, err := http.NewRequest("GET", fmt.Sprintf("%s/", t.target), nil)
+			if err != nil {
+				panic(fmt.Sprintf("Err trying to build heap check request: %q\n", err))
+			}
+			req.Header.Set(gciHeader, heapCheckHeader)
+			resp, err := client.Do(req)
+			if err != nil {
+				panic(fmt.Sprintf("Err trying to check heap:%q\n", err))
+			}
+			if resp.StatusCode != http.StatusOK {
+				panic(fmt.Sprintf("Heap check returned status code which is no OK:%v\n", resp.StatusCode))
+			}
+			b, err := ioutil.ReadAll(resp.Body)
+			if err != nil {
+				panic(fmt.Sprintf("Could not read check heap response: %q", err))
+			}
+			resp.Body.Close()
+			hs, err := strconv.ParseUint(string(b), 10, 64)
+			if err != nil {
+				panic(fmt.Sprintf("Could not convert heap size to number: %q", err))
+			}
+			atomic.StoreUint64(&t.heapSize, hs)
+		}()
 	}
 
 	if atomic.LoadInt32(&t.isAvailable) == 0 && response.StatusCode == http.StatusServiceUnavailable {
@@ -80,7 +133,7 @@ func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 				defer func() {
 					atomic.StoreInt32(&t.isAvailable, 0)
 				}()
-				t.inflight.Wait()
+				t.inflightWaiter.Wait()
 
 				req, err := http.NewRequest("GET", fmt.Sprintf("%s/", t.target), nil)
 				if err != nil {
@@ -121,8 +174,16 @@ func (p *proxy) handle(w http.ResponseWriter, r *http.Request) {
 func newProxy(target string) *proxy {
 	url, _ := url.Parse(target)
 	p := httputil.NewSingleHostReverseProxy(url)
-	p.Transport = &transport{target: target, isAvailable: 0, shed: 0}
+	p.Transport = newTransport(target)
 	return &proxy{target: url, proxy: p}
+}
+
+func newTransport(target string) *transport {
+	var h [sampleHistorySize]uint64
+	for i := range h {
+		h[i] = math.MaxUint64
+	}
+	return &transport{target: target, sampleHistory: h, sampleSize: defaultSampleSize}
 }
 
 func main() {
@@ -143,4 +204,22 @@ func main() {
 	router := httprouter.New()
 	router.HandlerFunc("GET", "/", proxy.handle)
 	log.Fatal(http.ListenAndServe(":"+*port, router))
+}
+
+func (t *transport) updateSampleSize(finished uint64) {
+	t.sampleHistory[t.sampleHistoryIndex] = finished
+	t.sampleHistoryIndex = (t.sampleHistoryIndex + 1) % len(t.sampleHistory)
+	min := uint64(math.MaxUint64)
+	for _, s := range t.sampleHistory {
+		if s < min {
+			min = s
+		}
+	}
+	if min > 0 {
+		s := min
+		if s > maxSampleSize {
+			s = maxSampleSize
+		}
+		atomic.StoreUint64(&t.sampleSize, s)
+	}
 }

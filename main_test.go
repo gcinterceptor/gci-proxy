@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 )
 
@@ -32,6 +33,39 @@ func TestProxyHandle(t *testing.T) {
 	}
 	if string(str) != "Hello, client" {
 		t.Errorf("want:\"Hello, client\" got:\"%s\"", string(str))
+	}
+}
+
+func TestCheckHeapSize(t *testing.T) {
+	var wg sync.WaitGroup
+	gotGCIHeapCheck := false
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(gciHeader) == heapCheckHeader {
+			fmt.Fprintf(w, "%d", 1)
+			gotGCIHeapCheck = true
+		}
+		wg.Done()
+	}))
+	defer target.Close()
+
+	p := newProxy(target.URL)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p.handle(w, r)
+	}))
+	defer server.Close()
+
+	wg.Add(1) // heap check.
+	for i := uint64(0); i < defaultSampleSize; i++ {
+		wg.Add(1)
+		_, err := http.Get(server.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	wg.Wait()
+	if !gotGCIHeapCheck {
+		t.Errorf("check cheader not set")
 	}
 }
 
