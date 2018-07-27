@@ -11,20 +11,20 @@ import (
 
 func TestSheddingThreshold(t *testing.T) {
 	seed := int64(25)
-	genSize := int64(1024)
+	genSize := uint64(1024)
 	st := newSheddingThreshold(seed, genSize)
 
 	// With this seed, the first sign is negative and the random is 0.8961363003854933.
 	start := startFraction * float64(genSize)
-	entropy := int64(entropyFraction * float64(genSize))
-	want := int64(start - float64(entropy)*0.8961363003854933)
+	entropy := uint64(entropyFraction * float64(genSize))
+	want := uint64(start - float64(entropy)*0.8961363003854933)
 	got := st.value()
 	if got < want-1 || got > want+1 { // accept rounding errors.
 		t.Errorf("young ST - got:%d want:%d [entropy:%d st.yEntropy:%d st.yGen:%d]", got, want, entropy, st.entropy, st.val)
 	}
 
 	// With this seed, the next sign is positive and the random is 0.23406078193324906.
-	want = int64(start + float64(entropy)*0.23406078193324906)
+	want = uint64(start + float64(entropy)*0.23406078193324906)
 	got = st.value()
 	if got < want-1 || got > want+1 { // accept rounding errors.
 		t.Errorf("tenured ST - got:%d want:%d [entropy:%d st.tEntropy:%d st.tGen:%d]", got, want, entropy, st.entropy, st.val)
@@ -152,7 +152,7 @@ func TestTransport_GC(t *testing.T) {
 	}
 }
 
-func proxyServer(target string, gen1, gen2 int64) *httptest.Server {
+func proxyServer(target string, gen1, gen2 uint64) *httptest.Server {
 	p := newProxy(target, gen1, gen2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p.handle(w, r)

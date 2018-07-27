@@ -39,15 +39,13 @@ const (
 )
 
 type transport struct {
-	isAvailable    int32
-	shed           uint64
-	target         string
-	inflightWaiter sync.WaitGroup
-	numReqArrived  uint64
-	numReqFinished uint64
-	window         sampleWindow
-	stGen1         sheddingThreshold
-	stGen2         sheddingThreshold
+	isAvailable int32
+	shed        uint64
+	target      string
+	waiter      pendingWaiter
+	window      sampleWindow
+	stGen1      sheddingThreshold
+	stGen2      sheddingThreshold
 }
 
 func shedResponse(req *http.Request) *http.Response {
@@ -90,19 +88,24 @@ func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 		atomic.AddUint64(&t.shed, 1)
 		return shedResponse(request), nil
 	}
-	nArrived := atomic.AddUint64(&t.numReqArrived, 1)
-	t.inflightWaiter.Add(1)
-	defer func() {
-		atomic.AddUint64(&t.numReqFinished, 1)
-		t.inflightWaiter.Done()
-	}()
-	if nArrived%t.window.size() == 0 { // Is it time to check the heap?
+	t.waiter.requestArrived()
+	resp, err := transportClient.RoundTrip(request)
+	t.waiter.requestFinished()
+	if t.waiter.getFinished()%t.window.size() == 0 { // Is it time to check the heap?
 		go t.checkHeap()
 	}
-	return transportClient.RoundTrip(request)
+	return resp, err
 }
 
 func (t *transport) checkHeap() {
+	// This wait pending could occur only at GC time. It is here because
+	// we don't the heap checking to interfere with the request processing.
+	defer func() {
+		atomic.StoreInt32(&t.isAvailable, 0)
+	}()
+	arrived, finished := t.waiter.waitPending()
+	t.window.update(finished)
+
 	req, err := http.NewRequest("GET", fmt.Sprintf("%s/", t.target), nil)
 	if err != nil {
 		panic(fmt.Sprintf("Err trying to build heap check request: %q\n", err))
@@ -121,33 +124,38 @@ func (t *transport) checkHeap() {
 	}
 	resp.Body.Close()
 	hs := strings.Split(string(b), genSeparator)
-	usedGen1, err := strconv.ParseInt(hs[0], 10, 64)
+	usedGen1, err := strconv.ParseUint(hs[0], 10, 64)
 	if err != nil {
 		panic(fmt.Sprintf("Could not convert usedGen1 size to number: %q", err))
 	}
-	if usedGen1 > t.stGen1.value() {
+	if shouldGC(finished-arrived, usedGen1, t.stGen1.value()) {
 		t.gc(gen1)
 		return
 	}
 	if len(hs) > 1 {
-		usedGen2, err := strconv.ParseInt(hs[1], 10, 64)
+		usedGen2, err := strconv.ParseUint(hs[1], 10, 64)
 		if err != nil {
 			panic(fmt.Sprintf("Could not convert usedGen2 size to number: %q", err))
 		}
-		if usedGen2 > t.stGen2.value() {
+		if shouldGC(finished-arrived, usedGen2, t.stGen2.value()) {
 			t.gc(gen2)
 			return
 		}
 	}
 }
 
-func (t *transport) gc(gen generation) {
-	defer func() {
-		atomic.StoreInt32(&t.isAvailable, 0)
-	}()
-	t.inflightWaiter.Wait()
-	t.window.update(atomic.LoadUint64(&t.numReqFinished))
+func shouldGC(pending, usedBytes, st uint64) bool {
+	// Amount of heap that has already been used plus an estimation of the amount
+	// of heap to used to process the queue. Here we are using simple mean as
+	// an estimation.
+	q := uint64(0)
+	if pending > 0 {
+		q = usedBytes / pending
+	}
+	return (usedBytes + q) > st
+}
 
+func (t *transport) gc(gen generation) {
 	req, err := http.NewRequest("GET", fmt.Sprintf("%s/", t.target), nil)
 	if err != nil {
 		panic(fmt.Sprintf("Err trying to build gc request: %q\n", err))
@@ -177,14 +185,14 @@ func (p *proxy) handle(w http.ResponseWriter, r *http.Request) {
 	p.proxy.ServeHTTP(w, r)
 }
 
-func newProxy(target string, yGen, tGen int64) *proxy {
+func newProxy(target string, yGen, tGen uint64) *proxy {
 	url, _ := url.Parse(target)
 	p := httputil.NewSingleHostReverseProxy(url)
 	p.Transport = newTransport(target, yGen, tGen)
 	return &proxy{target: url, proxy: p}
 }
 
-func newTransport(target string, yGen, tGen int64) *transport {
+func newTransport(target string, yGen, tGen uint64) *transport {
 	return &transport{
 		target: target,
 		window: newSampleWindow(),
@@ -204,8 +212,8 @@ func main() {
 	// flags
 	port := flag.String("port", defaultPort, defaultPortUsage)
 	redirectURL := flag.String("url", defaultTarget, defaultTargetUsage)
-	yGen := flag.Int64("ygen", 0, "Invalid young generation size.")
-	tGen := flag.Int64("tgen", 0, "Invalid tenured generation size.")
+	yGen := flag.Uint64("ygen", 0, "Invalid young generation size.")
+	tGen := flag.Uint64("tgen", 0, "Invalid tenured generation size.")
 	flag.Parse()
 
 	proxy := newProxy(*redirectURL, *yGen, *tGen)
@@ -218,6 +226,7 @@ func main() {
 ////////// SHEDDING THRESHOLD
 const (
 	// We currently have room for increase/decrease the entropy three times in a row.
+	// This is an important constraint, as the candidate will be bound by min and max fraction.
 	maxFraction     = 0.85
 	startFraction   = 0.7
 	entropyFraction = 0.05
@@ -226,26 +235,32 @@ const (
 
 type sheddingThreshold struct {
 	r                      *rand.Rand
-	max, min, val, entropy int64
+	max, min, val, entropy uint64
 }
 
-func newSheddingThreshold(seed, genSize int64) sheddingThreshold {
+func newSheddingThreshold(seed int64, genSize uint64) sheddingThreshold {
 	return sheddingThreshold{
 		r:       rand.New(rand.NewSource(seed)),
-		max:     int64(maxFraction * float64(genSize)),
-		min:     int64(minFraction * float64(genSize)),
-		val:     int64(startFraction * float64(genSize)),
-		entropy: int64(entropyFraction * float64(genSize)),
+		max:     uint64(maxFraction * float64(genSize)),
+		min:     uint64(minFraction * float64(genSize)),
+		val:     uint64(startFraction * float64(genSize)),
+		entropy: uint64(entropyFraction * float64(genSize)),
 	}
 }
 
-func (st *sheddingThreshold) value() int64 {
+func (st *sheddingThreshold) value() uint64 {
 	return getThreshold(st.r, st.val, st.max, st.min, st.entropy)
 }
 
-func getThreshold(r *rand.Rand, val, max, min, entropy int64) int64 {
-	e := int64(r.Float64() * float64(entropy))
-	candidate := val + (randomSign(r) * e)
+func getThreshold(r *rand.Rand, val, max, min, entropy uint64) uint64 {
+	e := uint64(r.Float64() * float64(entropy))
+	c := int64(val) + (randomSign(r) * int64(e))
+	var candidate uint64
+	if c > 0 {
+		candidate = uint64(c)
+	} else {
+		candidate = min + e
+	}
 	if candidate > max {
 		return max - e
 	}
@@ -308,4 +323,32 @@ func (s *sampleWindow) update(finished uint64) {
 		}
 	}
 	atomic.StoreUint64(&s.numReq, sw)
+}
+
+////////// PENDING WAITER
+type pendingWaiter struct {
+	arrived, finished uint64
+	wg                sync.WaitGroup
+}
+
+func (w *pendingWaiter) requestArrived() {
+	w.wg.Add(1)
+	atomic.AddUint64(&w.arrived, 1)
+}
+
+func (w *pendingWaiter) requestFinished() {
+	w.wg.Done()
+	atomic.AddUint64(&w.finished, 1)
+}
+
+func (w *pendingWaiter) getFinished() uint64 {
+	return atomic.LoadUint64(&w.finished)
+}
+
+func (w *pendingWaiter) waitPending() (uint64, uint64) {
+	a, f := atomic.LoadUint64(&w.arrived), atomic.LoadUint64(&w.finished)
+	w.wg.Wait()
+	atomic.StoreUint64(&w.arrived, 0)
+	atomic.StoreUint64(&w.finished, 0)
+	return a, f
 }
