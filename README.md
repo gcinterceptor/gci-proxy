@@ -12,8 +12,6 @@ The GCI-Proxy communicates to RPs through a simple protocol. The presence of the
 * `gen1` (collect gen1 garbage): it is a blocking HTTP call, which expects the cleanup of generation 1 (e.g., young) garbage. For generational runtimes, it usually represents a minor collection. 
 * `gen2` (collect gen2 garbage): it is a blocking HTTP call, which expects the cleanup of generation 2 (e.g., tenured) garbage. For generational runtimes, it usually represents a major/full collection.
 
-The absence of the `gci` header indicates that the usual request handling flow should take place.
-
 Example of RPs:
 
 * Ruby
