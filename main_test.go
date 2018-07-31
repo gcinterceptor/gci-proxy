@@ -121,8 +121,8 @@ func TestTransport_GC(t *testing.T) {
 		gen      string
 	}{
 		{"gen1", "1024", gen1.string()},
-		{"gen2", fmt.Sprintf("1%s1024", genSeparator), gen2.string()},
-		{"bothGens_gcGen1", fmt.Sprintf("1024%s1024", genSeparator), gen1.string()},
+		{"bothGens_gcGen1", fmt.Sprintf("1024%s1", genSeparator), gen1.string()},
+		{"bothGens_gcGen2", fmt.Sprintf("1%s1024", genSeparator), gen2.string()},
 	}
 	for _, d := range data {
 		t.Run(d.msg, func(t *testing.T) {

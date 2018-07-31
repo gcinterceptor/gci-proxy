@@ -124,15 +124,7 @@ func (t *transport) checkHeap() {
 	}
 	resp.Body.Close()
 	hs := strings.Split(string(b), genSeparator)
-	usedGen1, err := strconv.ParseUint(hs[0], 10, 64)
-	if err != nil {
-		panic(fmt.Sprintf("Could not convert usedGen1 size to number: %q", err))
-	}
-	if shouldGC(finished-arrived, usedGen1, t.stGen1.value()) {
-		t.gc(gen1)
-		return
-	}
-	if len(hs) > 1 {
+	if len(hs) > 1 { // If there is more than one generation, lets check the tenured and run the full gc if needed.
 		usedGen2, err := strconv.ParseUint(hs[1], 10, 64)
 		if err != nil {
 			panic(fmt.Sprintf("Could not convert usedGen2 size to number: %q", err))
@@ -141,6 +133,14 @@ func (t *transport) checkHeap() {
 			t.gc(gen2)
 			return
 		}
+	}
+	usedGen1, err := strconv.ParseUint(hs[0], 10, 64)
+	if err != nil {
+		panic(fmt.Sprintf("Could not convert usedGen1 size to number: %q", err))
+	}
+	if shouldGC(finished-arrived, usedGen1, t.stGen1.value()) {
+		t.gc(gen1)
+		return
 	}
 }
 
