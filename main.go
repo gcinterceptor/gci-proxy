@@ -238,10 +238,10 @@ func newTransport(target string, yGen, tGen uint64) *transport {
 const (
 	// We currently have room for increase/decrease the entropy three times in a row.
 	// This is an important constraint, as the candidate will be bound by min and max fraction.
-	maxFraction     = 0.85
+	maxFraction     = 0.9
 	startFraction   = 0.7
-	entropyFraction = 0.05
-	minFraction     = 0.55
+	entropyFraction = 0.1
+	minFraction     = 0.5
 )
 
 type sheddingThreshold struct {
