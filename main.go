@@ -100,6 +100,9 @@ func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 func (t *transport) checkHeap() {
 	// This wait pending could occur only at GC time. It is here because
 	// we don't the heap checking to interfere with the request processing.
+	if !atomic.CompareAndSwapInt32(&t.isAvailable, 0, 1) {
+		return
+	}
 	defer func() {
 		atomic.StoreInt32(&t.isAvailable, 0)
 	}()
@@ -173,6 +176,7 @@ func (t *transport) gc(gen generation) {
 		ioutil.ReadAll(resp.Body)
 		resp.Body.Close()
 	}
+	println("GC FINISHED: GEN", gen.string())
 }
 
 ////////// PROXY
@@ -215,6 +219,10 @@ func main() {
 	yGen := flag.Uint64("ygen", 0, "Invalid young generation size.")
 	tGen := flag.Uint64("tgen", 0, "Invalid tenured generation size.")
 	flag.Parse()
+
+	if *yGen == 0 || *tGen == 0 {
+		log.Fatalf("Neither ygen nor tgen can be 0. ygen:%d tgen:%d", *yGen, *tGen)
+	}
 
 	proxy := newProxy(*redirectURL, *yGen, *tGen)
 
@@ -281,7 +289,7 @@ func randomSign(r *rand.Rand) int64 {
 ////////// SAMPLE WINDOW
 const (
 	// Default sample size should be fairly small, so big requests get checked up quickly.
-	defaultSampleSize = uint64(64)
+	defaultSampleSize = uint64(32)
 	// Max sample size can not be very big because of peaks.
 	// The algorithm is fairly conservative, but we never know.
 	maxSampleSize = uint64(512)
