@@ -21,6 +21,36 @@ import (
 	"github.com/julienschmidt/httprouter"
 )
 
+func main() {
+	const (
+		defaultPort        = "3000"
+		defaultPortUsage   = "default server port, '3000'"
+		defaultTarget      = "http://127.0.0.1:8080"
+		defaultTargetUsage = "default redirect url, 'http://127.0.0.1:8080'"
+	)
+
+	// flags
+	port := flag.String("port", defaultPort, defaultPortUsage)
+	redirectURL := flag.String("url", defaultTarget, defaultTargetUsage)
+	yGen := flag.Uint64("ygen", 0, "Invalid young generation size.")
+	tGen := flag.Uint64("tgen", 0, "Invalid tenured generation size.")
+	flag.Parse()
+
+	if *yGen == 0 || *tGen == 0 {
+		log.Fatalf("Neither ygen nor tgen can be 0. ygen:%d tgen:%d", *yGen, *tGen)
+	}
+
+	proxy := newProxy(*redirectURL, *yGen, *tGen)
+	c := make(chan struct{}, 1)
+	router := httprouter.New()
+	router.HandlerFunc("GET", "/", func(w http.ResponseWriter, r *http.Request) {
+		c <- struct{}{}
+		proxy.handle(w, r)
+		<-c
+	})
+	log.Fatal(http.ListenAndServe(":"+*port, router))
+}
+
 const (
 	gciHeader       = "gci"
 	heapCheckHeader = "ch"
@@ -203,32 +233,6 @@ func newTransport(target string, yGen, tGen uint64) *transport {
 		stGen1: newSheddingThreshold(time.Now().UnixNano(), yGen),
 		stGen2: newSheddingThreshold(time.Now().UnixNano(), tGen),
 	}
-}
-
-func main() {
-	const (
-		defaultPort        = "3000"
-		defaultPortUsage   = "default server port, '3000'"
-		defaultTarget      = "http://127.0.0.1:8080"
-		defaultTargetUsage = "default redirect url, 'http://127.0.0.1:8080'"
-	)
-
-	// flags
-	port := flag.String("port", defaultPort, defaultPortUsage)
-	redirectURL := flag.String("url", defaultTarget, defaultTargetUsage)
-	yGen := flag.Uint64("ygen", 0, "Invalid young generation size.")
-	tGen := flag.Uint64("tgen", 0, "Invalid tenured generation size.")
-	flag.Parse()
-
-	if *yGen == 0 || *tGen == 0 {
-		log.Fatalf("Neither ygen nor tgen can be 0. ygen:%d tgen:%d", *yGen, *tGen)
-	}
-
-	proxy := newProxy(*redirectURL, *yGen, *tGen)
-
-	router := httprouter.New()
-	router.HandlerFunc("GET", "/", proxy.handle)
-	log.Fatal(http.ListenAndServe(":"+*port, router))
 }
 
 ////////// SHEDDING THRESHOLD
