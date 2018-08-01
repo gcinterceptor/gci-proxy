@@ -206,7 +206,6 @@ func (t *transport) gc(gen generation) {
 		ioutil.ReadAll(resp.Body)
 		resp.Body.Close()
 	}
-	println("GC FINISHED: GEN", gen.string())
 }
 
 ////////// PROXY
