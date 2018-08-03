@@ -195,10 +195,13 @@ func (t *transport) gc(gen generation) {
 	}
 	req.Header.Set(gciHeader, gen.string())
 	atomic.StoreUint64(&t.shed, 0)
+
+	start := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
 		panic(fmt.Sprintf("Err trying to trigger gc:%q\n", err))
 	}
+	end := time.Now()
 	if resp.StatusCode != http.StatusOK {
 		panic(fmt.Sprintf("GC trigger returned status code which is no OK:%v\n", resp.StatusCode))
 	}
@@ -206,6 +209,7 @@ func (t *transport) gc(gen generation) {
 		ioutil.ReadAll(resp.Body)
 		resp.Body.Close()
 	}
+	fmt.Printf("%s,%v", gen.string(), end.Sub(start).Nanoseconds()/1e3)
 }
 
 ////////// PROXY
