@@ -209,7 +209,7 @@ func (t *transport) gc(gen generation) {
 		ioutil.ReadAll(resp.Body)
 		resp.Body.Close()
 	}
-	fmt.Printf("%s,%v", gen.string(), end.Sub(start).Nanoseconds()/1e3)
+	fmt.Printf("%s,%v", gen.string(), end.Sub(start).Nanoseconds()/1e6)
 }
 
 ////////// PROXY
