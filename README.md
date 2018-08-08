@@ -6,6 +6,23 @@ To help cloud developers to deal with the impact of non-deterministic garbage co
 
 GCI has two main parts: i) the GCI-Proxy -- a multiplatform, runtime-agnostic HTTP intermediary responsible for controlling the garbage collector and shedding the load when necessary -- and the ii) the Request Processor(RP), a thin layer which runs within the service and is usually implemented as a framework middleware. The latter is responsible for checking the heap allocation and performing a garbage collection.
 
+
+## Running GCI Proxy
+
+```bash
+./gci-proxy --port 3000 --url http://localhost:8080 --ygen=67108864 --tgen=6710886
+```
+
+Where the flags:
+
+* --ygen: size in bytes of the young generation, e.g. 67108864 (64MB)
+* --tgen: size in bytes of the tenured generation, e.g. 67108864 (64MB)
+* --port: port which the gci-proxy will listen, e.g. 3000
+* --url: URL of the server being proxied, e.g. --url http://localhost:8080
+
+
+## GCI Proxy Protocol
+
 The GCI-Proxy communicates to RPs through a simple protocol. The presence of the `gci` request header indicates that the RP must handle them, its absence means that RP should trigger the usual request processing chain. This header can assume three values:
 
 * `ch` (check heap allocation): it is a blocking HTTP call, which expects the heap allocation in bytes as a response. For generational runtimes (e.g., Java and Ruby), the usage of each generation must be separated by `|` (pipe symbol), for example, 157810688|78905344 means that the young generation is using 128MB and tenured generation is using 64MB.
