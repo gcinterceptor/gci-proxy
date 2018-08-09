@@ -1,3 +1,5 @@
+[![Build Status](https://travis-ci.org/gcinterceptor/gci-proxy.svg?branch=master)](https://travis-ci.org/gcinterceptor/gci-proxy) [![Coverage Status](https://codecov.io/gh/gcinterceptor/gci-proxy/branch/master/graph/badge.svg)](https://codecov.io/gh/gcinterceptor/gci-proxy/branch/master/graph/badge.svg) [![Go Report Card](https://goreportcard.com/badge/github.com/gcinterceptor/gci-proxy)](https://goreportcard.com/report/github.com/gcinterceptor/gci-proxy) [![GoDoc](https://godoc.org/github.com/gcinterceptor/gci-proxy?status.svg)](https://godoc.org/github.com/gcinterceptor/gci-proxy)
+
 # GCI-Proxy
 
 > Disclaimer: a lot in flux
