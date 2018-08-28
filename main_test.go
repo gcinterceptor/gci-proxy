@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
-	"runtime/debug"
 	"sync"
 	"testing"
 )
@@ -163,13 +162,6 @@ func fireReqs(t *testing.T, wg *sync.WaitGroup, url string) {
 }
 
 func BenchmarkProxyHandle_Stateless(b *testing.B) {
-	// From: https://dave.cheney.net/2015/11/29/a-whirlwind-tour-of-gos-runtime-environment-variables
-	// Setting this value higher, say GOGC=200, will delay the start of a garbage collection
-	// cycle until the live heap has grown to 200% of the previous size. Setting the value lower,
-	// say GOGC=20 will cause the garbage collector to be triggered more often as less new data
-	// can be allocated on the heap before triggering a collection.
-	// Chose the value of 500 based on runs of this benchmar.
-	debug.SetGCPercent(400)
 	for n := 0; n < b.N; n++ {
 		func() {
 			var wg sync.WaitGroup
