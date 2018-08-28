@@ -118,8 +118,8 @@ func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 	}
 	t.waiter.requestArrived()
 	resp, err := transportClient.RoundTrip(request)
-	t.waiter.requestFinished()
-	if t.waiter.getFinished()%t.window.size() == 0 { // Is it time to check the heap?
+	finished := t.waiter.requestFinished()
+	if finished%t.window.size() == 0 { // Is it time to check the heap?
 		go t.checkHeap()
 	}
 	return resp, err
@@ -352,13 +352,9 @@ func (w *pendingWaiter) requestArrived() {
 	atomic.AddUint64(&w.arrived, 1)
 }
 
-func (w *pendingWaiter) requestFinished() {
+func (w *pendingWaiter) requestFinished() uint64 {
 	w.wg.Done()
-	atomic.AddUint64(&w.finished, 1)
-}
-
-func (w *pendingWaiter) getFinished() uint64 {
-	return atomic.LoadUint64(&w.finished)
+	return atomic.AddUint64(&w.finished, 1)
 }
 
 func (w *pendingWaiter) waitPending() (uint64, uint64) {
