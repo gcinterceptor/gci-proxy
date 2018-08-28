@@ -97,24 +97,18 @@ type transport struct {
 	heapCheckBuffer *bytes.Buffer
 }
 
-func shedResponse(req *http.Request) *http.Response {
-	return &http.Response{
-		Status:        http.StatusText(http.StatusServiceUnavailable),
-		StatusCode:    http.StatusServiceUnavailable,
-		Proto:         "HTTP/1.1",
-		ProtoMajor:    1,
-		ProtoMinor:    1,
-		Body:          ioutil.NopCloser(bytes.NewReader([]byte{})),
-		ContentLength: 0,
-		Request:       req,
-		Header:        make(http.Header, 0),
-	}
+var shedResponse = &http.Response{
+	Status:        http.StatusText(http.StatusServiceUnavailable),
+	StatusCode:    http.StatusServiceUnavailable,
+	Body:          http.NoBody,
+	ContentLength: 0,
+	Header:        make(http.Header, 0),
 }
 
 func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 	if atomic.LoadInt32(&t.isAvailable) == 1 {
 		atomic.AddUint64(&t.shed, 1)
-		return shedResponse(request), nil
+		return shedResponse, nil
 	}
 	t.waiter.requestArrived()
 	resp, err := transportClient.RoundTrip(request)
