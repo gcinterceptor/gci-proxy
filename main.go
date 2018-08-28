@@ -12,14 +12,28 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strconv"
-	"strings"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/julienschmidt/httprouter"
+	"go4.org/strutil"
 )
+
+var transportClient = &http.Transport{
+	Proxy:              http.ProxyFromEnvironment,
+	DisableCompression: true,
+	Dial: (&net.Dialer{
+		Timeout: 5 * time.Second,
+	}).Dial,
+	TLSHandshakeTimeout: 5 * time.Second,
+}
+
+var client = &http.Client{
+	Timeout:   time.Second * 5,
+	Transport: transportClient,
+}
 
 func main() {
 	const (
@@ -32,16 +46,19 @@ func main() {
 	// flags
 	port := flag.String("port", defaultPort, defaultPortUsage)
 	redirectURL := flag.String("url", defaultTarget, defaultTargetUsage)
-	cmdEndpoint := flag.String("endpoint", "/", "Custom endpoint to send GCI-specific commands. For example, '/gci'")
 	yGen := flag.Uint64("ygen", 0, "Young generation size, in bytes.")
 	tGen := flag.Uint64("tgen", 0, "Tenured generation size, in bytes.")
+	printGC := flag.Bool("print_gc", true, "Whether to print gc information.")
 	flag.Parse()
 
 	if *yGen == 0 || *tGen == 0 {
 		log.Fatalf("Neither ygen nor tgen can be 0. ygen:%d tgen:%d", *yGen, *tGen)
 	}
 
-	proxy := newProxy(*redirectURL, *cmdEndpoint, *yGen, *tGen)
+	// Configuring Garbage Collector activity. Please take a look at the benchmark comment before changing this value.
+	debug.SetGCPercent(400)
+
+	proxy := newProxy(*redirectURL, *yGen, *tGen, *printGC)
 	c := make(chan struct{}, 1)
 	router := httprouter.New()
 	router.HandlerFunc("GET", "/", func(w http.ResponseWriter, r *http.Request) {
@@ -55,8 +72,9 @@ func main() {
 const (
 	gciHeader       = "gci"
 	heapCheckHeader = "ch"
-	genSeparator    = "|"
 )
+
+var genSeparator = []byte{124} // character "|"
 
 type generation string
 
@@ -73,11 +91,11 @@ type transport struct {
 	isAvailable int32
 	shed        uint64
 	target      string
-	cmdEndpoint string
 	waiter      pendingWaiter
 	window      sampleWindow
 	stGen1      sheddingThreshold
 	stGen2      sheddingThreshold
+	printGC     bool
 }
 
 func shedResponse(req *http.Request) *http.Response {
@@ -94,29 +112,8 @@ func shedResponse(req *http.Request) *http.Response {
 	}
 }
 
-var transportClient = &http.Transport{
-	Dial: (&net.Dialer{
-		Timeout: 5 * time.Second,
-	}).Dial,
-	TLSHandshakeTimeout: 5 * time.Second,
-}
-var client = &http.Client{
-	Timeout:   time.Second * 5,
-	Transport: transportClient,
-}
-
 func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
-	if request.Body != nil {
-		buf, err := ioutil.ReadAll(request.Body)
-		if err != nil {
-			panic(err)
-		}
-		request.Body = ioutil.NopCloser(bytes.NewBuffer(buf))
-	}
 	if atomic.LoadInt32(&t.isAvailable) == 1 {
-		if request != nil && request.Body != nil {
-			request.Body.Close()
-		}
 		atomic.AddUint64(&t.shed, 1)
 		return shedResponse(request), nil
 	}
@@ -141,7 +138,7 @@ func (t *transport) checkHeap() {
 	arrived, finished := t.waiter.waitPending()
 	t.window.update(finished)
 
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s%s", t.target, t.cmdEndpoint), nil)
+	req, err := http.NewRequest("GET", t.target, nil)
 	if err != nil {
 		panic(fmt.Sprintf("Err trying to build heap check request: %q\n", err))
 	}
@@ -158,9 +155,9 @@ func (t *transport) checkHeap() {
 		panic(fmt.Sprintf("Could not read check heap response: %q", err))
 	}
 	resp.Body.Close()
-	hs := strings.Split(string(b), genSeparator)
+	hs := bytes.Split(b, genSeparator)
 	if len(hs) > 1 { // If there is more than one generation, lets check the tenured and run the full gc if needed.
-		usedGen2, err := strconv.ParseUint(hs[1], 10, 64)
+		usedGen2, err := strutil.ParseUintBytes(hs[1], 10, 64)
 		if err != nil {
 			panic(fmt.Sprintf("Could not convert usedGen2 size to number: %q", err))
 		}
@@ -169,7 +166,7 @@ func (t *transport) checkHeap() {
 			return
 		}
 	}
-	usedGen1, err := strconv.ParseUint(hs[0], 10, 64)
+	usedGen1, err := strutil.ParseUintBytes(hs[0], 10, 64)
 	if err != nil {
 		panic(fmt.Sprintf("Could not convert usedGen1 size to number: %q", err))
 	}
@@ -191,7 +188,7 @@ func shouldGC(pending, usedBytes, st uint64) bool {
 }
 
 func (t *transport) gc(gen generation) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s%s", t.target, t.cmdEndpoint), nil)
+	req, err := http.NewRequest("GET", t.target, nil)
 	if err != nil {
 		panic(fmt.Sprintf("Err trying to build gc request: %q\n", err))
 	}
@@ -211,7 +208,9 @@ func (t *transport) gc(gen generation) {
 		ioutil.ReadAll(resp.Body)
 		resp.Body.Close()
 	}
-	fmt.Printf("%d,%s,%v\n", start.Unix(), gen.string(), end.Sub(start).Nanoseconds()/1e6)
+	if t.printGC {
+		fmt.Printf("%d,%s,%v\n", start.Unix(), gen.string(), end.Sub(start).Nanoseconds()/1e6)
+	}
 }
 
 ////////// PROXY
@@ -224,20 +223,20 @@ func (p *proxy) handle(w http.ResponseWriter, r *http.Request) {
 	p.proxy.ServeHTTP(w, r)
 }
 
-func newProxy(target, cmdEndpoint string, yGen, tGen uint64) *proxy {
+func newProxy(target string, yGen, tGen uint64, printGC bool) *proxy {
 	url, _ := url.Parse(target)
 	p := httputil.NewSingleHostReverseProxy(url)
-	p.Transport = newTransport(target, cmdEndpoint, yGen, tGen)
+	p.Transport = newTransport(target, yGen, tGen, printGC)
 	return &proxy{target: url, proxy: p}
 }
 
-func newTransport(target, cmdEndpoint string, yGen, tGen uint64) *transport {
+func newTransport(target string, yGen, tGen uint64, printGC bool) *transport {
 	return &transport{
-		target:      target,
-		cmdEndpoint: cmdEndpoint,
-		window:      newSampleWindow(),
-		stGen1:      newSheddingThreshold(time.Now().UnixNano(), yGen),
-		stGen2:      newSheddingThreshold(time.Now().UnixNano(), tGen),
+		target:  target,
+		window:  newSampleWindow(),
+		stGen1:  newSheddingThreshold(time.Now().UnixNano(), yGen),
+		stGen2:  newSheddingThreshold(time.Now().UnixNano(), tGen),
+		printGC: printGC,
 	}
 }
 

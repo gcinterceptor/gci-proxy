@@ -5,6 +5,8 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
+	"runtime/debug"
 	"sync"
 	"testing"
 )
@@ -60,7 +62,7 @@ func TestProxyHandle(t *testing.T) {
 	}))
 	defer target.Close()
 
-	p := newProxy(target.URL, "/", 1024, 1024)
+	p := newProxy(target.URL, 1024, 1024, false)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p.handle(w, r)
@@ -85,19 +87,16 @@ func TestTransport_CheckHeapSize(t *testing.T) {
 	data := []struct {
 		msg      string
 		response string
-		endpoint string
 	}{
-		{"onlyGen1_defaultEndpoint", "1", "/"},
-		{"bothGens_defaultEndpoint", fmt.Sprintf("1%s1", genSeparator), "/"},
-		{"onlyGen1_customEndpoint", "1", "/gci"},
-		{"bothGens_customEndpoint", fmt.Sprintf("1%s1", genSeparator), "/gci"},
+		{"onlyGen", "1"},
+		{"bothGens", fmt.Sprintf("1%s1", genSeparator)},
 	}
 	for _, d := range data {
 		t.Run(d.msg, func(t *testing.T) {
 			var wg sync.WaitGroup
 			gotGCIHeapCheck := false
 			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Header.Get(gciHeader) == heapCheckHeader && r.URL.Path == d.endpoint {
+				if r.Header.Get(gciHeader) == heapCheckHeader && r.URL.Path == "/" {
 					fmt.Fprintf(w, d.response)
 					gotGCIHeapCheck = true
 				}
@@ -105,7 +104,7 @@ func TestTransport_CheckHeapSize(t *testing.T) {
 			}))
 			defer target.Close()
 
-			server := proxyServer(target.URL, d.endpoint, 1024, 1024)
+			server := proxyServer(target.URL, 1024, 1024)
 			defer server.Close()
 
 			fireReqs(t, &wg, server.URL)
@@ -123,11 +122,12 @@ func TestTransport_GC(t *testing.T) {
 		response string
 		gen      string
 	}{
-		{"gen1", "1024", gen1.string()},
-		{"bothGens_gcGen1", fmt.Sprintf("1024%s1", genSeparator), gen1.string()},
-		{"bothGens_gcGen2", fmt.Sprintf("1%s1024", genSeparator), gen2.string()},
+		//{"gen1", "1024", gen1.string()},
+		{"bothGens_gcGen1", fmt.Sprintf("1024%s1", string(genSeparator)), gen1.string()},
+		{"bothGens_gcGen2", fmt.Sprintf("1%s1024", string(genSeparator)), gen2.string()},
 	}
 	for _, d := range data {
+		fmt.Println("boooo", d.response)
 		t.Run(d.msg, func(t *testing.T) {
 			var wg sync.WaitGroup
 			gcRan := false
@@ -135,17 +135,17 @@ func TestTransport_GC(t *testing.T) {
 				if r.Header.Get(gciHeader) == heapCheckHeader && r.URL.Path == "/gci" {
 					fmt.Fprintf(w, d.response)
 				}
-				if r.Header.Get(gciHeader) == d.gen {
+				if r.Header.Get(gciHeader) == d.gen && r.URL.Path == "/gci" {
 					gcRan = true
 				}
 				wg.Done()
 			}))
 			defer target.Close()
 
-			server := proxyServer(target.URL, "/gci", 1024, 1024)
+			server := proxyServer(target.URL+"/gci", 1024, 1024)
 			defer server.Close()
 
-			wg.Add(1)
+			wg.Add(1) // the GC call.
 			fireReqs(t, &wg, server.URL)
 
 			if !gcRan {
@@ -155,8 +155,8 @@ func TestTransport_GC(t *testing.T) {
 	}
 }
 
-func proxyServer(target, cmdEndpoint string, gen1, gen2 uint64) *httptest.Server {
-	p := newProxy(target, cmdEndpoint, gen1, gen2)
+func proxyServer(target string, gen1, gen2 uint64) *httptest.Server {
+	p := newProxy(target, gen1, gen2, false)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p.handle(w, r)
 	}))
@@ -175,28 +175,54 @@ func fireReqs(t *testing.T, wg *sync.WaitGroup, url string) {
 	wg.Wait()
 }
 
-func BenchmarkProxyHandle(b *testing.B) {
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "Hello, client")
-	}))
-	defer target.Close()
-
-	p := newProxy(target.URL, "/", 1024, 1024)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p.handle(w, r)
-	}))
-	defer server.Close()
-
-	b.SetParallelism(10)
+func BenchmarkProxyHandle_Stateless(b *testing.B) {
+	// From: https://dave.cheney.net/2015/11/29/a-whirlwind-tour-of-gos-runtime-environment-variables
+	// Setting this value higher, say GOGC=200, will delay the start of a garbage collection
+	// cycle until the live heap has grown to 200% of the previous size. Setting the value lower,
+	// say GOGC=20 will cause the garbage collector to be triggered more often as less new data
+	// can be allocated on the heap before triggering a collection.
+	// Chose the value of 500 based on runs of this benchmar.
+	debug.SetGCPercent(400)
 	for n := 0; n < b.N; n++ {
-		res, err := http.Get(server.URL)
-		if err != nil {
-			b.Fatal(err)
-		}
-		res.Body.Close()
-		if err != nil {
-			b.Fatal(err)
-		}
+		func() {
+			var wg sync.WaitGroup
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer wg.Done()
+				switch r.Header.Get(gciHeader) {
+				case "":
+					// Allocating some memory and a consuming a little processing.
+					m := make([]byte, 1024)
+					for i := range m {
+						m[i] = byte(i)
+					}
+					w.WriteHeader(200)
+				case heapCheckHeader:
+					var mem runtime.MemStats
+					runtime.ReadMemStats(&mem)
+					fmt.Fprintf(w, "%d", mem.HeapAlloc)
+				default:
+					runtime.GC()
+				}
+			}))
+			defer target.Close()
+
+			p := newProxy(target.URL, 10240, 10240, false)
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				p.handle(w, r)
+			}))
+			defer server.Close()
+
+			wg.Add(1) // GC call.
+			wg.Add(1) // heap check.
+			for i := uint64(0); i < defaultSampleSize; i++ {
+				wg.Add(1)
+				_, err := http.Get(server.URL)
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+			wg.Wait()
+		}()
 	}
 }

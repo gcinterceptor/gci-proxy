@@ -11,3 +11,6 @@ vendor
 gci-proxy_darwin_amd64
 gci-proxy_linux_amd64
 gci-proxy_windows_amd64.exe
+bench*
+*.test
+*.out
