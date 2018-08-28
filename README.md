@@ -12,7 +12,7 @@ GCI has two main parts: i) the GCI-Proxy -- a multiplatform, runtime-agnostic HT
 ## Running GCI Proxy
 
 ```bash
-./gci-proxy --port 3000 --url http://localhost:8080 --ygen=67108864 --tgen=6710886
+./gci-proxy --port 3000 --url http://localhost:8080 --ygen=67108864 --tgen=6710886 --endpoint="/gci"
 ```
 
 Where the flags:
@@ -21,6 +21,7 @@ Where the flags:
 * --tgen: size in bytes of the tenured generation, e.g. 67108864 (64MB)
 * --port: port which the gci-proxy will listen, e.g. 3000
 * --url: URL of the server being proxied, e.g. --url http://localhost:8080
+* --endpoint: (optional) custom HTTP endpoint to send GCI-specific commands, e.g. --endpoint=/__gci
 
 
 ## GCI Proxy Protocol

@@ -60,7 +60,7 @@ func TestProxyHandle(t *testing.T) {
 	}))
 	defer target.Close()
 
-	p := newProxy(target.URL, 1024, 1024)
+	p := newProxy(target.URL, "/", 1024, 1024)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p.handle(w, r)
@@ -85,16 +85,20 @@ func TestTransport_CheckHeapSize(t *testing.T) {
 	data := []struct {
 		msg      string
 		response string
+		endpoint string
 	}{
-		{"onlyGen1", "1"},
-		{"bothGens", fmt.Sprintf("1%s1", genSeparator)},
+		{"onlyGen1_defaultEndpoint", "1", "/"},
+		{"bothGens_defaultEndpoint", fmt.Sprintf("1%s1", genSeparator), "/"},
+		{"onlyGen1_customEndpoint", "1", "/gci"},
+		{"bothGens_customEndpoint", fmt.Sprintf("1%s1", genSeparator), "/gci"},
 	}
 	for _, d := range data {
 		t.Run(d.msg, func(t *testing.T) {
 			var wg sync.WaitGroup
 			gotGCIHeapCheck := false
 			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Header.Get(gciHeader) == heapCheckHeader {
+				fmt.Println(r.URL.Path)
+				if r.Header.Get(gciHeader) == heapCheckHeader && r.URL.Path == d.endpoint {
 					fmt.Fprintf(w, d.response)
 					gotGCIHeapCheck = true
 				}
@@ -102,7 +106,7 @@ func TestTransport_CheckHeapSize(t *testing.T) {
 			}))
 			defer target.Close()
 
-			server := proxyServer(target.URL, 1024, 1024)
+			server := proxyServer(target.URL, d.endpoint, 1024, 1024)
 			defer server.Close()
 
 			fireReqs(t, &wg, server.URL)
@@ -129,7 +133,7 @@ func TestTransport_GC(t *testing.T) {
 			var wg sync.WaitGroup
 			gcRan := false
 			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Header.Get(gciHeader) == heapCheckHeader {
+				if r.Header.Get(gciHeader) == heapCheckHeader && r.URL.Path == "/gci" {
 					fmt.Fprintf(w, d.response)
 				}
 				if r.Header.Get(gciHeader) == d.gen {
@@ -139,7 +143,7 @@ func TestTransport_GC(t *testing.T) {
 			}))
 			defer target.Close()
 
-			server := proxyServer(target.URL, 1024, 1024)
+			server := proxyServer(target.URL, "/gci", 1024, 1024)
 			defer server.Close()
 
 			wg.Add(1)
@@ -152,8 +156,8 @@ func TestTransport_GC(t *testing.T) {
 	}
 }
 
-func proxyServer(target string, gen1, gen2 uint64) *httptest.Server {
-	p := newProxy(target, gen1, gen2)
+func proxyServer(target, cmdEndpoint string, gen1, gen2 uint64) *httptest.Server {
+	p := newProxy(target, cmdEndpoint, gen1, gen2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p.handle(w, r)
 	}))
@@ -178,7 +182,7 @@ func BenchmarkProxyHandle(b *testing.B) {
 	}))
 	defer target.Close()
 
-	p := newProxy(target.URL, 1024, 1024)
+	p := newProxy(target.URL, "/", 1024, 1024)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p.handle(w, r)

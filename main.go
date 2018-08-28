@@ -32,15 +32,16 @@ func main() {
 	// flags
 	port := flag.String("port", defaultPort, defaultPortUsage)
 	redirectURL := flag.String("url", defaultTarget, defaultTargetUsage)
-	yGen := flag.Uint64("ygen", 0, "Invalid young generation size.")
-	tGen := flag.Uint64("tgen", 0, "Invalid tenured generation size.")
+	cmdEndpoint := flag.String("endpoint", "/", "Custom endpoint to send GCI-specific commands. For example, '/gci'")
+	yGen := flag.Uint64("ygen", 0, "Young generation size, in bytes.")
+	tGen := flag.Uint64("tgen", 0, "Tenured generation size, in bytes.")
 	flag.Parse()
 
 	if *yGen == 0 || *tGen == 0 {
 		log.Fatalf("Neither ygen nor tgen can be 0. ygen:%d tgen:%d", *yGen, *tGen)
 	}
 
-	proxy := newProxy(*redirectURL, *yGen, *tGen)
+	proxy := newProxy(*redirectURL, *cmdEndpoint, *yGen, *tGen)
 	c := make(chan struct{}, 1)
 	router := httprouter.New()
 	router.HandlerFunc("GET", "/", func(w http.ResponseWriter, r *http.Request) {
@@ -72,6 +73,7 @@ type transport struct {
 	isAvailable int32
 	shed        uint64
 	target      string
+	cmdEndpoint string
 	waiter      pendingWaiter
 	window      sampleWindow
 	stGen1      sheddingThreshold
@@ -139,7 +141,7 @@ func (t *transport) checkHeap() {
 	arrived, finished := t.waiter.waitPending()
 	t.window.update(finished)
 
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s/", t.target), nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s%s", t.target, t.cmdEndpoint), nil)
 	if err != nil {
 		panic(fmt.Sprintf("Err trying to build heap check request: %q\n", err))
 	}
@@ -189,7 +191,7 @@ func shouldGC(pending, usedBytes, st uint64) bool {
 }
 
 func (t *transport) gc(gen generation) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s/", t.target), nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s%s", t.target, t.cmdEndpoint), nil)
 	if err != nil {
 		panic(fmt.Sprintf("Err trying to build gc request: %q\n", err))
 	}
@@ -222,19 +224,20 @@ func (p *proxy) handle(w http.ResponseWriter, r *http.Request) {
 	p.proxy.ServeHTTP(w, r)
 }
 
-func newProxy(target string, yGen, tGen uint64) *proxy {
+func newProxy(target, cmdEndpoint string, yGen, tGen uint64) *proxy {
 	url, _ := url.Parse(target)
 	p := httputil.NewSingleHostReverseProxy(url)
-	p.Transport = newTransport(target, yGen, tGen)
+	p.Transport = newTransport(target, cmdEndpoint, yGen, tGen)
 	return &proxy{target: url, proxy: p}
 }
 
-func newTransport(target string, yGen, tGen uint64) *transport {
+func newTransport(target, cmdEndpoint string, yGen, tGen uint64) *transport {
 	return &transport{
-		target: target,
-		window: newSampleWindow(),
-		stGen1: newSheddingThreshold(time.Now().UnixNano(), yGen),
-		stGen2: newSheddingThreshold(time.Now().UnixNano(), tGen),
+		target:      target,
+		cmdEndpoint: cmdEndpoint,
+		window:      newSampleWindow(),
+		stGen1:      newSheddingThreshold(time.Now().UnixNano(), yGen),
+		stGen2:      newSheddingThreshold(time.Now().UnixNano(), tGen),
 	}
 }
 
