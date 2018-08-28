@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"math"
@@ -88,14 +89,15 @@ const (
 )
 
 type transport struct {
-	isAvailable int32
-	shed        uint64
-	target      string
-	waiter      pendingWaiter
-	window      sampleWindow
-	stGen1      sheddingThreshold
-	stGen2      sheddingThreshold
-	printGC     bool
+	isAvailable     int32
+	shed            uint64
+	target          string
+	waiter          pendingWaiter
+	window          sampleWindow
+	stGen1          sheddingThreshold
+	stGen2          sheddingThreshold
+	printGC         bool
+	heapCheckBuffer *bytes.Buffer
 }
 
 func shedResponse(req *http.Request) *http.Response {
@@ -138,7 +140,7 @@ func (t *transport) checkHeap() {
 	arrived, finished := t.waiter.waitPending()
 	t.window.update(finished)
 
-	req, err := http.NewRequest("GET", t.target, nil)
+	req, err := http.NewRequest("GET", t.target, http.NoBody)
 	if err != nil {
 		panic(fmt.Sprintf("Err trying to build heap check request: %q\n", err))
 	}
@@ -150,12 +152,13 @@ func (t *transport) checkHeap() {
 	if resp.StatusCode != http.StatusOK {
 		panic(fmt.Sprintf("Heap check returned status code which is no OK:%v\n", resp.StatusCode))
 	}
-	b, err := ioutil.ReadAll(resp.Body)
+	t.heapCheckBuffer.Reset()
+	_, err = t.heapCheckBuffer.ReadFrom(resp.Body)
 	if err != nil {
 		panic(fmt.Sprintf("Could not read check heap response: %q", err))
 	}
 	resp.Body.Close()
-	hs := bytes.Split(b, genSeparator)
+	hs := bytes.Split(t.heapCheckBuffer.Bytes(), genSeparator)
 	if len(hs) > 1 { // If there is more than one generation, lets check the tenured and run the full gc if needed.
 		usedGen2, err := strutil.ParseUintBytes(hs[1], 10, 64)
 		if err != nil {
@@ -204,10 +207,8 @@ func (t *transport) gc(gen generation) {
 	if resp.StatusCode != http.StatusOK {
 		panic(fmt.Sprintf("GC trigger returned status code which is no OK:%v\n", resp.StatusCode))
 	}
-	if resp != nil {
-		ioutil.ReadAll(resp.Body)
-		resp.Body.Close()
-	}
+	io.Copy(ioutil.Discard, resp.Body)
+	resp.Body.Close()
 	if t.printGC {
 		fmt.Printf("%d,%s,%v\n", start.Unix(), gen.string(), end.Sub(start).Nanoseconds()/1e6)
 	}
@@ -232,11 +233,12 @@ func newProxy(target string, yGen, tGen uint64, printGC bool) *proxy {
 
 func newTransport(target string, yGen, tGen uint64, printGC bool) *transport {
 	return &transport{
-		target:  target,
-		window:  newSampleWindow(),
-		stGen1:  newSheddingThreshold(time.Now().UnixNano(), yGen),
-		stGen2:  newSheddingThreshold(time.Now().UnixNano(), tGen),
-		printGC: printGC,
+		target:          target,
+		window:          newSampleWindow(),
+		stGen1:          newSheddingThreshold(time.Now().UnixNano(), yGen),
+		stGen2:          newSheddingThreshold(time.Now().UnixNano(), tGen),
+		printGC:         printGC,
+		heapCheckBuffer: bytes.NewBuffer(make([]byte, 8)), // enough to store a uint64
 	}
 }
 
