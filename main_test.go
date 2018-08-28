@@ -62,11 +62,7 @@ func TestProxyHandle(t *testing.T) {
 	}))
 	defer target.Close()
 
-	p := newProxy(target.URL, 1024, 1024, false)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p.handle(w, r)
-	}))
+	server := httptest.NewServer(newProxy(target.URL, 1024, 1024, false))
 	defer server.Close()
 
 	res, err := http.Get(server.URL)
@@ -74,10 +70,10 @@ func TestProxyHandle(t *testing.T) {
 		t.Fatal(err)
 	}
 	str, err := ioutil.ReadAll(res.Body)
-	res.Body.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
+	res.Body.Close()
 	if string(str) != "Hello, client" {
 		t.Errorf("want:\"Hello, client\" got:\"%s\"", string(str))
 	}
@@ -104,7 +100,7 @@ func TestTransport_CheckHeapSize(t *testing.T) {
 			}))
 			defer target.Close()
 
-			server := proxyServer(target.URL, 1024, 1024)
+			server := httptest.NewServer(newProxy(target.URL, 1024, 1024, false))
 			defer server.Close()
 
 			fireReqs(t, &wg, server.URL)
@@ -142,7 +138,7 @@ func TestTransport_GC(t *testing.T) {
 			}))
 			defer target.Close()
 
-			server := proxyServer(target.URL+"/gci", 1024, 1024)
+			server := httptest.NewServer(newProxy(target.URL+"/gci", 1024, 1024, false))
 			defer server.Close()
 
 			wg.Add(1) // the GC call.
@@ -153,14 +149,6 @@ func TestTransport_GC(t *testing.T) {
 			}
 		})
 	}
-}
-
-func proxyServer(target string, gen1, gen2 uint64) *httptest.Server {
-	p := newProxy(target, gen1, gen2, false)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p.handle(w, r)
-	}))
-	return server
 }
 
 func fireReqs(t *testing.T, wg *sync.WaitGroup, url string) {
@@ -205,12 +193,7 @@ func BenchmarkProxyHandle_Stateless(b *testing.B) {
 				}
 			}))
 			defer target.Close()
-
-			p := newProxy(target.URL, 10240, 10240, false)
-
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				p.handle(w, r)
-			}))
+			server := httptest.NewServer(newProxy(target.URL, 10240, 10240, false))
 			defer server.Close()
 
 			wg.Add(1) // GC call.

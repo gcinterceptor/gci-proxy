@@ -11,9 +11,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
-	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -55,15 +53,8 @@ func main() {
 	if *yGen == 0 || *tGen == 0 {
 		log.Fatalf("Neither ygen nor tgen can be 0. ygen:%d tgen:%d", *yGen, *tGen)
 	}
-
-	// Configuring Garbage Collector activity. Please take a look at the benchmark comment before changing this value.
-	debug.SetGCPercent(400)
-
-	proxy := newProxy(*redirectURL, *yGen, *tGen, *printGC)
 	router := httprouter.New()
-	router.HandlerFunc("GET", "/", func(w http.ResponseWriter, r *http.Request) {
-		proxy.handle(w, r)
-	})
+	router.HandlerFunc("GET", "/", newProxy(*redirectURL, *yGen, *tGen, *printGC))
 	log.Fatal(http.ListenAndServe(":"+*port, router))
 }
 
@@ -205,23 +196,6 @@ func (t *transport) gc(gen generation) {
 	}
 }
 
-////////// PROXY
-type proxy struct {
-	target *url.URL
-	proxy  *httputil.ReverseProxy
-}
-
-func (p *proxy) handle(w http.ResponseWriter, r *http.Request) {
-	p.proxy.ServeHTTP(w, r)
-}
-
-func newProxy(target string, yGen, tGen uint64, printGC bool) *proxy {
-	url, _ := url.Parse(target)
-	p := httputil.NewSingleHostReverseProxy(url)
-	p.Transport = newTransport(target, yGen, tGen, printGC)
-	return &proxy{target: url, proxy: p}
-}
-
 func newTransport(target string, yGen, tGen uint64, printGC bool) *transport {
 	return &transport{
 		target:          target,
@@ -230,6 +204,41 @@ func newTransport(target string, yGen, tGen uint64, printGC bool) *transport {
 		stGen2:          newSheddingThreshold(time.Now().UnixNano(), tGen),
 		printGC:         printGC,
 		heapCheckBuffer: bytes.NewBuffer(make([]byte, 8)), // enough to store a uint64
+	}
+}
+
+////////// PROXY
+
+func newProxy(redirURL string, yGen, tGen uint64, printGC bool) http.HandlerFunc {
+	target, err := url.Parse(redirURL)
+	if err != nil {
+		log.Fatalf("couldn't parse url:%q", err)
+	}
+	t := newTransport(target.String(), yGen, tGen, printGC)
+	return func(w http.ResponseWriter, req *http.Request) {
+		req.URL.Scheme = target.Scheme
+		req.URL.Host = target.Host
+		if _, ok := req.Header["User-Agent"]; !ok {
+			// explicitly disable User-Agent so it's not set to default value
+			req.Header.Set("User-Agent", "")
+		}
+		resp, err := t.RoundTrip(req)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		defer resp.Body.Close()
+		copyHeader(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		io.Copy(w, resp.Body)
+	}
+}
+
+func copyHeader(dst, src http.Header) {
+	for k, vv := range src {
+		for _, v := range vv {
+			dst.Add(k, v)
+		}
 	}
 }
 
