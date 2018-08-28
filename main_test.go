@@ -97,7 +97,6 @@ func TestTransport_CheckHeapSize(t *testing.T) {
 			var wg sync.WaitGroup
 			gotGCIHeapCheck := false
 			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				fmt.Println(r.URL.Path)
 				if r.Header.Get(gciHeader) == heapCheckHeader && r.URL.Path == d.endpoint {
 					fmt.Fprintf(w, d.response)
 					gotGCIHeapCheck = true
