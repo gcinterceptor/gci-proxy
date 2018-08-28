@@ -60,12 +60,9 @@ func main() {
 	debug.SetGCPercent(400)
 
 	proxy := newProxy(*redirectURL, *yGen, *tGen, *printGC)
-	c := make(chan struct{}, 1)
 	router := httprouter.New()
 	router.HandlerFunc("GET", "/", func(w http.ResponseWriter, r *http.Request) {
-		c <- struct{}{}
 		proxy.handle(w, r)
-		<-c
 	})
 	log.Fatal(http.ListenAndServe(":"+*port, router))
 }
