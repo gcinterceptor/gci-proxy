@@ -123,7 +123,6 @@ func TestTransport_GC(t *testing.T) {
 		{"bothGens_gcGen2", fmt.Sprintf("1%s1024", string(genSeparator)), gen2.string()},
 	}
 	for _, d := range data {
-		fmt.Println("boooo", d.response)
 		t.Run(d.msg, func(t *testing.T) {
 			var wg sync.WaitGroup
 			gcRan := false
