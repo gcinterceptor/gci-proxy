@@ -57,14 +57,17 @@ func TestSampleWindow_Update(t *testing.T) {
 
 func TestProxyHandle(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "Hello, client")
+		println(r.URL.Path)
+		if r.URL.Path == "/hello" {
+			fmt.Fprint(w, "Hello, client")
+		}
 	}))
 	defer target.Close()
 
 	server := httptest.NewServer(newProxy(target.URL, 1024, 1024, false))
 	defer server.Close()
 
-	res, err := http.Get(server.URL)
+	res, err := http.Get(server.URL + "/hello")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +120,7 @@ func TestTransport_GC(t *testing.T) {
 		response string
 		gen      string
 	}{
-		//{"gen1", "1024", gen1.string()},
+		{"gen1", "1024", gen1.string()},
 		{"bothGens_gcGen1", fmt.Sprintf("1024%s1", string(genSeparator)), gen1.string()},
 		{"bothGens_gcGen2", fmt.Sprintf("1%s1024", string(genSeparator)), gen2.string()},
 	}
