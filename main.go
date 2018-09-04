@@ -222,7 +222,6 @@ func newProxy(redirURL string, yGen, tGen uint64, printGC bool) http.HandlerFunc
 		oldURL := req.URL.String()
 		req.URL.Scheme = target.Scheme
 		req.URL.Host = target.Host
-		fmt.Printf("Target:%s ChangedURL:%s OldURL:%s\n", target.String(), req.URL.String(), oldURL)
 		if _, ok := req.Header["User-Agent"]; !ok {
 			// explicitly disable User-Agent so it's not set to default value
 			req.Header.Set("User-Agent", "")
