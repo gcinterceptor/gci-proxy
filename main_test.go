@@ -57,7 +57,6 @@ func TestSampleWindow_Update(t *testing.T) {
 
 func TestProxyHandle(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		println(r.URL.Path)
 		if r.URL.Path == "/hello" {
 			fmt.Fprint(w, "Hello, client")
 		}
