@@ -219,7 +219,6 @@ func newProxy(redirURL string, yGen, tGen uint64, printGC bool) http.HandlerFunc
 	}
 	t := newTransport(target.String(), yGen, tGen, printGC)
 	return func(w http.ResponseWriter, req *http.Request) {
-		oldURL := req.URL.String()
 		req.URL.Scheme = target.Scheme
 		req.URL.Host = target.Host
 		if _, ok := req.Header["User-Agent"]; !ok {
