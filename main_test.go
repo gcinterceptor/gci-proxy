@@ -64,7 +64,7 @@ func TestProxyHandle(t *testing.T) {
 	}))
 	defer target.Close()
 
-	server := httptest.NewServer(newProxy(target.URL, 1024, 1024, false))
+	server := httptest.NewServer(newProxy(target.URL+"/gci", 1024, 1024, false))
 	defer server.Close()
 
 	res, err := http.Get(server.URL + "/hello")
