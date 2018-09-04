@@ -16,7 +16,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/julienschmidt/httprouter"
 	"go4.org/strutil"
 )
 
@@ -53,9 +52,13 @@ func main() {
 	if *yGen == 0 || *tGen == 0 {
 		log.Fatalf("Neither ygen nor tgen can be 0. ygen:%d tgen:%d", *yGen, *tGen)
 	}
-	router := httprouter.New()
-	router.HandlerFunc("GET", "/", newProxy(*redirectURL, *yGen, *tGen, *printGC))
-	log.Fatal(http.ListenAndServe(":"+*port, router))
+	srv := &http.Server{
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 5 * time.Second,
+		Handler:      newProxy(*redirectURL, *yGen, *tGen, *printGC),
+		Addr:         ":" + *port,
+	}
+	log.Fatal(srv.ListenAndServe())
 }
 
 const (

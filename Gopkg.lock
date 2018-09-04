@@ -2,12 +2,6 @@
 
 
 [[projects]]
-  name = "github.com/julienschmidt/httprouter"
-  packages = ["."]
-  revision = "8c199fb6259ffc1af525cc3ad52ee60ba8359669"
-  version = "v1.1"
-
-[[projects]]
   branch = "master"
   name = "go4.org"
   packages = ["strutil"]
@@ -16,6 +10,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "184dd161113a9554ad88c389b30cbf20c7e787f131253ef78d9142bdb4311500"
+  inputs-digest = "dabd95eda2e53976a2382a784b5aac6ba12685f8389db9b2680a324b49446c1e"
   solver-name = "gps-cdcl"
   solver-version = 1
