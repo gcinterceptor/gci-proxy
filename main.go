@@ -114,17 +114,6 @@ func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 }
 
 func (t *transport) checkHeap() {
-	// This wait pending could occur only at GC time. It is here because
-	// we don't the heap checking to interfere with the request processing.
-	if !atomic.CompareAndSwapInt32(&t.isAvailable, 0, 1) {
-		return
-	}
-	defer func() {
-		atomic.StoreInt32(&t.isAvailable, 0)
-	}()
-	arrived, finished := t.waiter.waitPending()
-	t.window.update(finished)
-
 	req, err := http.NewRequest("GET", t.target, http.NoBody)
 	if err != nil {
 		panic(fmt.Sprintf("Err trying to build heap check request: %q\n", err))
@@ -144,12 +133,13 @@ func (t *transport) checkHeap() {
 	}
 	resp.Body.Close()
 	hs := bytes.Split(t.heapCheckBuffer.Bytes(), genSeparator)
+	arrived, finished := t.waiter.requestInfo()
 	if len(hs) > 1 { // If there is more than one generation, lets check the tenured and run the full gc if needed.
 		usedGen2, err := strutil.ParseUintBytes(hs[1], 10, 64)
 		if err != nil {
 			panic(fmt.Sprintf("Could not convert usedGen2 size to number: %q", err))
 		}
-		if shouldGC(finished-arrived, usedGen2, t.stGen2.value()) {
+		if shouldGC(arrived, finished, usedGen2, t.stGen2.value()) {
 			t.gc(gen2)
 			return
 		}
@@ -158,24 +148,36 @@ func (t *transport) checkHeap() {
 	if err != nil {
 		panic(fmt.Sprintf("Could not convert usedGen1 size to number: %q", err))
 	}
-	if shouldGC(finished-arrived, usedGen1, t.stGen1.value()) {
+	if shouldGC(arrived, finished, usedGen1, t.stGen1.value()) {
 		t.gc(gen1)
 		return
 	}
 }
 
-func shouldGC(pending, usedBytes, st uint64) bool {
+func shouldGC(arrived, finished, usedBytes, st uint64) bool {
 	// Amount of heap that has already been used plus an estimation of the amount
 	// of heap to used to process the queue. Here we are using simple mean as
 	// an estimation.
-	q := uint64(0)
-	if pending > 0 {
-		q = usedBytes / pending
+	avgHeapUsage := uint64(0)
+	if finished > 0 {
+		avgHeapUsage = usedBytes / finished
 	}
-	return (usedBytes + q) > st
+	estimation := avgHeapUsage * (arrived - finished)
+	return (usedBytes + estimation) > st
 }
 
 func (t *transport) gc(gen generation) {
+	// This wait pending could occur only at GC time. It is here because
+	// we don't the heap checking to interfere with the request processing.
+	if !atomic.CompareAndSwapInt32(&t.isAvailable, 0, 1) {
+		return
+	}
+	defer func() {
+		atomic.StoreInt32(&t.isAvailable, 0)
+	}()
+	_, finished := t.waiter.waitPending()
+	t.window.update(finished)
+
 	req, err := http.NewRequest("GET", t.target, nil)
 	if err != nil {
 		panic(fmt.Sprintf("Err trying to build gc request: %q\n", err))
@@ -369,4 +371,8 @@ func (w *pendingWaiter) waitPending() (uint64, uint64) {
 	atomic.StoreUint64(&w.arrived, 0)
 	atomic.StoreUint64(&w.finished, 0)
 	return a, f
+}
+
+func (w *pendingWaiter) requestInfo() (uint64, uint64) {
+	return atomic.LoadUint64(&w.arrived), atomic.LoadUint64(&w.finished)
 }
