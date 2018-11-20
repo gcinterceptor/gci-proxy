@@ -1,0 +1,53 @@
+title = "GCI Proxy Overhead Measurements."
+
+[owner]
+name = "Daniel Fireman"
+email = "danielfireman@gmail.com"
+
+[setup]
+num_vms = 4
+vcpus = 2
+ram_gb = 4
+git_version = "2.7.4"
+curl_version = "7.47.0"
+nginx_version = "nginx/1.14.0 (Ubuntu)"
+so_version = "Ubuntu 18.04 LTS"
+kernel_version = "4.15.0-29-generic"
+go_version = 1.11
+
+[execution]
+# exports: export commands which should be used to export common environment variables. Should use outdir=stateless for stateless experiments and outdir=stateful for stateful experiments.
+exports = 'export outdir="results"; export expdir=${PWD}'
+
+# killall: kill all processes started by the experiment.
+killall = 'ssh -i ${sshkey} ubuntu@${ip1} "killall gci-proxy 2>/dev/null; killall nopserver 2>/dev/null"'
+
+# setup: setup the environment (VMs/servers), guaranteeing that everything need to start the experiment is there. For example, copy files and sync repositories.
+setup = 'cd ../ && go build && scp -i $sshkey gci-proxy ubuntu@${ip1}:~/gci-proxy && cd nopserver &&  go build && scp -i $sshkey nopserver ubuntu@${ip1}:~/nopserver; ssh -i $sshkey ubuntu@$client "wget https://github.com/tsenart/vegeta/releases/download/cli%2Fv12.1.0/vegeta-12.1.0-linux-amd64.tar.gz && tar -xzvf vegeta-12.1.0-linux-amd64.tar.gz"'
+
+# load: trigger the load.
+load = 'ssh -i ${sshkey} ubuntu@${client} "echo \"GET http://${ip1}:3000/\" | ./vegeta attack -duration=60s -rate=500 >/dev/null"; ssh -i ${sshkey} ubuntu@${ip1} "truncate -s 0 *${expid}_${ip}*"; ssh -i ${sshkey} ubuntu@${client} "echo \"GET http://${ip1}:3000/\" | ./vegeta attack -duration=60s -rate=500 > results.bin; cat results.bin | ./vegeta report > vegeta_${expid}.out 2>vegeta_${expid}.err; cat results.bin | ./vegeta plot > plot_${expid}.html; rm results.bin"'
+
+# fetch_results: fetches experiment results.
+fetch_results = 'scp -i ${sshkey} ubuntu@${client}:~/*_${expid}* ${outdir}; scp -i ${sshkey} ubuntu@${ip1}:~/*_${expid}_${ip}* ${outdir}'
+
+# cleanup: killall processes, removes files and revert configuration changes done by the experiment run.
+cleanup = 'ssh -i ${sshkey} ubuntu@${client} "rm *_${expid}*"; ssh -i ${sshkey} ubuntu@${ip1} "killall nopserver 2>/dev/null; killall gci-proxy 2>/dev/null; rm *_${expid}_${ip}*"'
+
+    [execution.noproxy]
+    # start: start all processes needed by the experiment run. Update some values to execute correctly the experiment.
+    start = 'ssh -i ${sshkey} ubuntu@${ip1} "GODEBUG=gctrace=1 nohup ./nopserver --port 3000 > nopserver_${expid}_${ip}.out 2>nopserver_${expid}_${ip}.err &"'
+    
+        [execution.noproxy.1]
+        # exports: export commands which should be used to export common environment variables.
+        exports = 'export expid="noproxy_1"'
+
+    [execution.proxy]
+    # start: start all processes needed by the experiment run. Update some values to execute correctly the experiment.
+    start = 'ssh -i ${sshkey} ubuntu@${ip1} "GODEBUG=gctrace=1 nohup ./nopserver --port 3001 > nopserver_${expid}_${ip}.out 2>nopserver_${expid}_${ip}.err & GODEBUG=gctrace=1 nohup ./gci-proxy --port 3000 --url http://localhost:3001 --ygen=67108864 --tgen=6710886 > proxy_${expid}_${ip}.out 2>proxy_${expid}_${ip}.err &"'
+
+        [execution.proxy.1]
+        # exports: export commands which should be used to export common environment variables.
+        exports = 'export expid="proxy_1"'
+        
+        
