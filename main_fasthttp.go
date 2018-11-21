@@ -95,15 +95,12 @@ func (t *transport) RoundTrip(ctx *fasthttp.RequestCtx) {
 	req := &ctx.Request
 	resp := &ctx.Response
 	if atomic.LoadInt32(&t.isAvailable) == 1 {
-		resp.Header.Reset()
 		resp.Header.SetContentLength(0)
 		resp.ResetBody()
 		ctx.SetStatusCode(http.StatusServiceUnavailable)
 		return
 	}
 	t.waiter.requestArrived()
-	req.Header.Del("Connection") // // do not proxy "Connection" header (https://github.com/valyala/fasthttp/issues/64)
-	req.Header.Del("User-Agent") // explicitly disable User-Agent so it's not set to default value
 
 	err := t.client.Do(req, resp)
 	finished := t.waiter.requestFinished()
@@ -113,7 +110,6 @@ func (t *transport) RoundTrip(ctx *fasthttp.RequestCtx) {
 	if finished%t.window.size() == 0 { // Is it time to check the heap?
 		go t.checkHeap()
 	}
-	resp.Header.Del("Connection")
 }
 
 func (t *transport) checkHeap() {
@@ -177,7 +173,6 @@ func (t *transport) gc(gen generation) {
 	if resp.StatusCode() != http.StatusOK {
 		panic(fmt.Sprintf("GC trigger returned status code which is no OK:%v\n", resp.StatusCode))
 	}
-	resp.ResetBody()
 	if t.printGC {
 		fmt.Printf("%d,%s,%v\n", start.Unix(), gen.string(), end.Sub(start).Nanoseconds()/1e6)
 	}
