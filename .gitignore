@@ -14,3 +14,4 @@ gci-proxy_windows_amd64.exe
 bench*
 *.test
 *.out
+main

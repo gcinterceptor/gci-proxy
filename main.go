@@ -9,9 +9,9 @@ import (
 	"log"
 	"math"
 	"math/rand"
-	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,17 +19,18 @@ import (
 	"go4.org/strutil"
 )
 
+var numCPU = runtime.NumCPU()
+
 var transportClient = &http.Transport{
-	Proxy:              http.ProxyFromEnvironment,
-	DisableCompression: true,
-	Dial: (&net.Dialer{
-		Timeout: 5 * time.Second,
-	}).Dial,
-	TLSHandshakeTimeout: 5 * time.Second,
+	Proxy:               http.ProxyFromEnvironment,
+	MaxIdleConns:        numCPU,
+	MaxIdleConnsPerHost: numCPU,
+	MaxConnsPerHost:     numCPU,
+	IdleConnTimeout:     5 * time.Minute,
 }
 
 var client = &http.Client{
-	Timeout:   time.Second * 5,
+	Timeout:   5 * time.Minute,
 	Transport: transportClient,
 }
 
@@ -81,7 +82,6 @@ const (
 
 type transport struct {
 	isAvailable     int32
-	shed            uint64
 	target          string
 	waiter          pendingWaiter
 	window          sampleWindow
@@ -101,7 +101,6 @@ var shedResponse = &http.Response{
 
 func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 	if atomic.LoadInt32(&t.isAvailable) == 1 {
-		atomic.AddUint64(&t.shed, 1)
 		return shedResponse, nil
 	}
 	t.waiter.requestArrived()
@@ -183,7 +182,6 @@ func (t *transport) gc(gen generation) {
 		panic(fmt.Sprintf("Err trying to build gc request: %q\n", err))
 	}
 	req.Header.Set(gciHeader, gen.string())
-	atomic.StoreUint64(&t.shed, 0)
 
 	start := time.Now()
 	resp, err := client.Do(req)
@@ -305,12 +303,12 @@ func randomSign(r *rand.Rand) int64 {
 ////////// SAMPLE WINDOW
 const (
 	// Default sample size should be fairly small, so big requests get checked up quickly.
-	defaultSampleSize = uint64(32)
+	defaultSampleSize = uint64(64)
 	// Max sample size can not be very big because of peaks.
 	// The algorithm is fairly conservative, but we never know.
-	maxSampleSize = uint64(512)
+	maxSampleSize = uint64(1024)
 	// As load changes a lot, the history size does not need to be big.
-	sampleHistorySize = 5
+	sampleHistorySize = 10
 )
 
 func newSampleWindow() sampleWindow {
@@ -345,8 +343,8 @@ func (s *sampleWindow) update(finished uint64) {
 		if sw > maxSampleSize {
 			sw = maxSampleSize
 		}
+		atomic.StoreUint64(&s.numReq, sw)
 	}
-	atomic.StoreUint64(&s.numReq, sw)
 }
 
 ////////// PENDING WAITER

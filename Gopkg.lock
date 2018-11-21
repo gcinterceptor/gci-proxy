@@ -2,6 +2,12 @@
 
 
 [[projects]]
+  name = "github.com/gcinterceptor/gci-go"
+  packages = ["httphandler"]
+  revision = "8390b3489ca0901e4d2ef65e2df329152c075844"
+  version = "0.5"
+
+[[projects]]
   branch = "master"
   name = "go4.org"
   packages = ["strutil"]
@@ -10,6 +16,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "dabd95eda2e53976a2382a784b5aac6ba12685f8389db9b2680a324b49446c1e"
+  inputs-digest = "11e8297cada2e39e70de745cff1ec9e4075c83e37b31f2cb58f3e2835f68d750"
   solver-name = "gps-cdcl"
   solver-version = 1
