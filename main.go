@@ -24,7 +24,6 @@ var transportClient = &http.Transport{
 	Proxy:               http.ProxyFromEnvironment,
 	MaxIdleConns:        numCPU,
 	MaxIdleConnsPerHost: numCPU,
-	MaxConnsPerHost:     numCPU,
 	IdleConnTimeout:     5 * time.Minute,
 }
 
