@@ -65,7 +65,7 @@ cleanup = 'ssh -i ${sshkey} ubuntu@${client} "rm *_${expid}*"; ssh -i ${sshkey} 
 
     [execution.proxy.fast]
     # start: start all processes needed by the experiment run. Update some values to execute correctly the experiment.
-    start = 'ssh -i ${sshkey} ubuntu@${ip1} "nohup ./nopserver --port 3001 --gci > nopserver_${expid}_${ip}.out 2>nopserver_${expid}_${ip}.err & GOGC=200 GOMAXPROCS=1nohup ./gci-proxy --port 3000 --url localhost:3001 --ygen=67108864 --tgen=6710886 > proxy_${expid}_${ip}.out 2>proxy_${expid}_${ip}.err &"'
+    start = 'ssh -i ${sshkey} ubuntu@${ip1} "nohup ./nopserver --port 3001 --gci > nopserver_${expid}_${ip}.out 2>nopserver_${expid}_${ip}.err & GOGC=200 GOMAXPROCS=1 nohup ./gci-proxy --port 3000 --url localhost:3001 --ygen=67108864 --tgen=6710886 > proxy_${expid}_${ip}.out 2>proxy_${expid}_${ip}.err &"'
 
         [execution.proxy.fast.1]
         # exports: export commands which should be used to export common environment variables.
