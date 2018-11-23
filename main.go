@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -117,10 +118,12 @@ func (t *transport) checkHeap() {
 		panic(fmt.Sprintf("Err trying to build heap check request: %q\n", err))
 	}
 	req.Header.Set(gciHeader, heapCheckHeader)
+	start := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
 		panic(fmt.Sprintf("Err trying to check heap:%q\n", err))
 	}
+	end := time.Now()
 	if resp.StatusCode != http.StatusOK {
 		panic(fmt.Sprintf("Heap check returned status code which is no OK:%v\n", resp.StatusCode))
 	}
@@ -138,6 +141,9 @@ func (t *transport) checkHeap() {
 			panic(fmt.Sprintf("Could not convert usedGen2 size to number: %q", err))
 		}
 		if shouldGC(arrived, finished, usedGen2, t.stGen2.value()) {
+			if t.printGC {
+				fmt.Printf("ch:%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
+			}
 			t.gc(gen2)
 			return
 		}
@@ -147,8 +153,14 @@ func (t *transport) checkHeap() {
 		panic(fmt.Sprintf("Could not convert usedGen1 size to number: %q", err))
 	}
 	if shouldGC(arrived, finished, usedGen1, t.stGen1.value()) {
+		if t.printGC {
+			fmt.Printf("ch:%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
+		}
 		t.gc(gen1)
 		return
+	}
+	if t.printGC {
+		fmt.Printf("ch:%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
 	}
 }
 
@@ -184,6 +196,14 @@ func (t *transport) gc(gen generation) {
 	if t.printGC {
 		fmt.Printf("%d,%s,%v\n", start.Unix(), gen.string(), end.Sub(start).Nanoseconds()/1e6)
 	}
+}
+
+func byteToStringSlice(iSlice [][]byte) string {
+	sSlice := make([]string, len(iSlice))
+	for i, v := range iSlice {
+		sSlice[i] = string(v)
+	}
+	return strings.Join(sSlice, ",")
 }
 
 func newTransport(target string, yGen, tGen uint64, printGC bool) *transport {

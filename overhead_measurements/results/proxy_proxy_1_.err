@@ -1,0 +1,6 @@
+gc 1 @54.514s 0%: 0.089+1.9+0.039 ms clock, 0.089+0.82/0.60/0+0.039 ms cpu, 8->8->0 MB, 12 MB goal, 1 P
+gc 2 @75.293s 0%: 0.086+1.6+0.057 ms clock, 0.086+0.56/0.51/0+0.057 ms cpu, 8->8->0 MB, 9 MB goal, 1 P
+gc 3 @96.083s 0%: 0.067+1.4+0.037 ms clock, 0.067+0.65/0.39/0+0.037 ms cpu, 8->8->0 MB, 9 MB goal, 1 P
+scvg0: inuse: 3, idle: 59, sys: 63, released: 0, consumed: 63 (MB)
+GC forced
+gc 4 @230.156s 0%: 0.16+1.9+0.066 ms clock, 0.16+0/0.19/1.7+0.066 ms cpu, 3->3->0 MB, 8 MB goal, 1 P

@@ -8,8 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
-	"runtime"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -17,8 +16,6 @@ import (
 	"github.com/valyala/tcplisten"
 	"go4.org/strutil"
 )
-
-var numCPUs = runtime.GOMAXPROCS(0)
 
 func main() {
 	const (
@@ -43,20 +40,18 @@ func main() {
 	cfg := tcplisten.Config{
 		ReusePort: true,
 	}
-	listenAddr := ":" + *port
-	ln, err := cfg.NewListener("tcp4", listenAddr)
+	ln, err := cfg.NewListener("tcp4", fmt.Sprintf(":%s", *port))
 	if err != nil {
-		log.Fatalf("cannot listen to %q: %s", listenAddr, err)
+		log.Fatalf("cannot listen to -in=%q: %s", fmt.Sprintf(":%s", *port), err)
 	}
-	server := &fasthttp.Server{
+	s := fasthttp.Server{
 		Handler:           newProxy(*redirectURL, *yGen, *tGen, *printGC, *gciCmdPath),
-		LogAllErrors:      false,
 		ReduceMemoryUsage: true,
-		ReadTimeout:       5 * time.Minute,
-		WriteTimeout:      5 * time.Minute,
-		ReadBufferSize:    10 * 1024,
+		ReadTimeout:       120 * time.Second,
+		WriteTimeout:      5 * time.Second,
+		TCPKeepalive:      true,
 	}
-	if err := server.Serve(ln); err != nil {
+	if err := s.Serve(ln); err != nil {
 		log.Fatalf("error in fasthttp server: %s", err)
 	}
 }
@@ -80,15 +75,14 @@ const (
 )
 
 type transport struct {
-	isAvailable     int32
-	client          *fasthttp.HostClient
-	protocolTarget  string
-	waiter          pendingWaiter
-	window          sampleWindow
-	stGen1          sheddingThreshold
-	stGen2          sheddingThreshold
-	printGC         bool
-	heapCheckBuffer *bytes.Buffer
+	isAvailable    int32
+	client         *fasthttp.HostClient
+	protocolTarget string
+	waiter         pendingWaiter
+	window         sampleWindow
+	stGen1         sheddingThreshold
+	stGen2         sheddingThreshold
+	printGC        bool
 }
 
 func (t *transport) RoundTrip(ctx *fasthttp.RequestCtx) {
@@ -101,12 +95,15 @@ func (t *transport) RoundTrip(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	t.waiter.requestArrived()
-
+	req.Header.ResetConnectionClose()
 	err := t.client.Do(req, resp)
 	finished := t.waiter.requestFinished()
 	if err != nil {
+		ctx.ResetBody()
+		ctx.SetStatusCode(fasthttp.StatusBadGateway)
 		return
 	}
+	resp.Header.Del("Connection")
 	if finished%t.window.size() == 0 { // Is it time to check the heap?
 		go t.checkHeap()
 	}
@@ -118,10 +115,11 @@ func (t *transport) checkHeap() {
 	req.Header.Add(gciHeader, heapCheckHeader)
 
 	resp := fasthttp.AcquireResponse()
-	err := t.client.Do(req, resp)
-	if err != nil {
+	start := time.Now()
+	if err := t.client.Do(req, resp); err != nil {
 		panic(fmt.Sprintf("Err trying to check heap:%q\n", err))
 	}
+	end := time.Now()
 	if resp.StatusCode() != http.StatusOK {
 		panic(fmt.Sprintf("Heap check returned status code which is no OK:%v\n", resp.StatusCode))
 	}
@@ -133,6 +131,12 @@ func (t *transport) checkHeap() {
 			panic(fmt.Sprintf("Could not convert usedGen2 size to number: %q", err))
 		}
 		if shouldGC(arrived, finished, usedGen2, t.stGen2.value()) {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			if t.printGC {
+
+				fmt.Printf("ch:%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
+			}
 			t.gc(gen2)
 			return
 		}
@@ -142,12 +146,31 @@ func (t *transport) checkHeap() {
 		panic(fmt.Sprintf("Could not convert usedGen1 size to number: %q", err))
 	}
 	if shouldGC(arrived, finished, usedGen1, t.stGen1.value()) {
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+		if t.printGC {
+			fmt.Printf("ch:%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
+		}
 		t.gc(gen1)
 		return
 	}
+	fasthttp.ReleaseRequest(req)
+	fasthttp.ReleaseResponse(resp)
+	if t.printGC {
+		fmt.Printf("ch:%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
+	}
+}
+
+func byteToStringSlice(iSlice [][]byte) string {
+	sSlice := make([]string, len(iSlice))
+	for i, v := range iSlice {
+		sSlice[i] = string(v)
+	}
+	return strings.Join(sSlice, ",")
 }
 
 func (t *transport) gc(gen generation) {
+	//fmt.Printf("GC started\n")
 	// This wait pending could occur only at GC time. It is here because
 	// we don't the heap checking to interfere with the request processing.
 	if !atomic.CompareAndSwapInt32(&t.isAvailable, 0, 1) {
@@ -162,11 +185,13 @@ func (t *transport) gc(gen generation) {
 	req := fasthttp.AcquireRequest()
 	req.SetRequestURI(t.protocolTarget)
 	req.Header.Add(gciHeader, gen.string())
+	defer fasthttp.ReleaseRequest(req)
 
 	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+
 	start := time.Now()
-	err := t.client.Do(req, resp)
-	if err != nil {
+	if err := t.client.Do(req, resp); err != nil {
 		panic(fmt.Sprintf("Err trying to check heap:%q\n", err))
 	}
 	end := time.Now()
@@ -174,37 +199,30 @@ func (t *transport) gc(gen generation) {
 		panic(fmt.Sprintf("GC trigger returned status code which is no OK:%v\n", resp.StatusCode))
 	}
 	if t.printGC {
-		fmt.Printf("%d,%s,%v\n", start.Unix(), gen.string(), end.Sub(start).Nanoseconds()/1e6)
+		fmt.Printf("gc:%d,%s,%v\n", start.Unix(), gen.string(), end.Sub(start).Nanoseconds()/1e6)
 	}
 }
 
 func newTransport(target string, yGen, tGen uint64, printGC bool, gciCmdPath string) *transport {
-	client := &fasthttp.HostClient{
-		Addr:         target,
-		Dial:         fasthttp.Dial,
-		MaxConns:     numCPUs,
-		ReadTimeout:  5 * time.Minute,
-		WriteTimeout: 5 * time.Minute,
-	}
-
 	return &transport{
-		client:          client,
-		protocolTarget:  fmt.Sprintf("http://%s/%s", target, gciCmdPath),
-		window:          newSampleWindow(),
-		stGen1:          newSheddingThreshold(time.Now().UnixNano(), yGen),
-		stGen2:          newSheddingThreshold(time.Now().UnixNano(), tGen),
-		printGC:         printGC,
-		heapCheckBuffer: bytes.NewBuffer(make([]byte, 8)), // enough to store a uint64
+		client: &fasthttp.HostClient{
+			Addr:                target,
+			Dial:                fasthttp.Dial,
+			ReadTimeout:         120 * time.Second,
+			WriteTimeout:        120 * time.Second,
+			MaxIdleConnDuration: 120 * time.Second,
+		},
+		protocolTarget: fmt.Sprintf("http://%s/%s", target, gciCmdPath),
+		window:         newSampleWindow(),
+		stGen1:         newSheddingThreshold(time.Now().UnixNano(), yGen),
+		stGen2:         newSheddingThreshold(time.Now().UnixNano(), tGen),
+		printGC:        printGC,
 	}
 }
 
 ////////// PROXY
 
 func newProxy(redirURL string, yGen, tGen uint64, printGC bool, gciCmd string) func(*fasthttp.RequestCtx) {
-	target, err := url.Parse(redirURL)
-	if err != nil {
-		log.Fatalf("couldn't parse url:%q", err)
-	}
-	t := newTransport(target.String(), yGen, tGen, printGC, gciCmd)
+	t := newTransport(redirURL, yGen, tGen, printGC, gciCmd)
 	return t.RoundTrip
 }
