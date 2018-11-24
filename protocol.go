@@ -21,8 +21,8 @@ func shouldGC(arrived, finished, usedBytes, st uint64) bool {
 
 ////////// SHEDDING THRESHOLD
 const (
-	maxFraction     = 0.7  // Percentage of the genSize which defines the upper bound of the the shedding threshold.
-	startFraction   = 0.6  // Percentage of the genSize which defines the start of the the shedding threshold.
+	maxFraction     = 0.8  // Percentage of the genSize which defines the upper bound of the the shedding threshold.
+	startFraction   = 0.65 // Percentage of the genSize which defines the start of the the shedding threshold.
 	entropyFraction = 0.25 // Percentage of the genSize that might increase/decrease after each GC.
 	minFraction     = 0.5  // Percentage of the genSize which defines the lower bound of the the shedding threshold.
 )
@@ -78,9 +78,9 @@ const (
 	defaultSampleSize = uint64(64)
 	// Max sample size can not be very big because of peaks. But can not be
 	// small because of high throughput systems.
-	maxSampleSize = uint64(512)
+	maxSampleSize = uint64(256)
 	// As load changes a lot, the history size does not need to be big.
-	sampleHistorySize = 10
+	sampleHistorySize = 5
 )
 
 func newSampleWindow() sampleWindow {
