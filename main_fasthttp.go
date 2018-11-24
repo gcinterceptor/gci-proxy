@@ -135,7 +135,7 @@ func (t *transport) checkHeap() {
 			fasthttp.ReleaseResponse(resp)
 			if t.printGC {
 
-				fmt.Printf("ch:%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
+				fmt.Printf("ch,%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
 			}
 			t.gc(gen2)
 			return
@@ -149,7 +149,7 @@ func (t *transport) checkHeap() {
 		fasthttp.ReleaseRequest(req)
 		fasthttp.ReleaseResponse(resp)
 		if t.printGC {
-			fmt.Printf("ch:%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
+			fmt.Printf("ch,%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
 		}
 		t.gc(gen1)
 		return
@@ -157,7 +157,7 @@ func (t *transport) checkHeap() {
 	fasthttp.ReleaseRequest(req)
 	fasthttp.ReleaseResponse(resp)
 	if t.printGC {
-		fmt.Printf("ch:%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
+		fmt.Printf("ch,%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
 	}
 }
 
@@ -170,7 +170,6 @@ func byteToStringSlice(iSlice [][]byte) string {
 }
 
 func (t *transport) gc(gen generation) {
-	//fmt.Printf("GC started\n")
 	// This wait pending could occur only at GC time. It is here because
 	// we don't the heap checking to interfere with the request processing.
 	if !atomic.CompareAndSwapInt32(&t.isAvailable, 0, 1) {
@@ -199,7 +198,7 @@ func (t *transport) gc(gen generation) {
 		panic(fmt.Sprintf("GC trigger returned status code which is no OK:%v\n", resp.StatusCode))
 	}
 	if t.printGC {
-		fmt.Printf("gc:%d,%s,%v\n", start.Unix(), gen.string(), end.Sub(start).Nanoseconds()/1e6)
+		fmt.Printf("gc,%d,%s,%v\n", start.Unix(), gen.string(), end.Sub(start).Nanoseconds()/1e6)
 	}
 }
 

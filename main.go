@@ -142,7 +142,7 @@ func (t *transport) checkHeap() {
 		}
 		if shouldGC(arrived, finished, usedGen2, t.stGen2.value()) {
 			if t.printGC {
-				fmt.Printf("ch:%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
+				fmt.Printf("ch,%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
 			}
 			t.gc(gen2)
 			return
@@ -154,13 +154,13 @@ func (t *transport) checkHeap() {
 	}
 	if shouldGC(arrived, finished, usedGen1, t.stGen1.value()) {
 		if t.printGC {
-			fmt.Printf("ch:%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
+			fmt.Printf("ch,%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
 		}
 		t.gc(gen1)
 		return
 	}
 	if t.printGC {
-		fmt.Printf("ch:%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
+		fmt.Printf("ch,%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
 	}
 }
 
@@ -194,7 +194,7 @@ func (t *transport) gc(gen generation) {
 	io.Copy(ioutil.Discard, resp.Body)
 	resp.Body.Close()
 	if t.printGC {
-		fmt.Printf("%d,%s,%v\n", start.Unix(), gen.string(), end.Sub(start).Nanoseconds()/1e6)
+		fmt.Printf("gc,%d,%s,%v\n", start.Unix(), gen.string(), end.Sub(start).Nanoseconds()/1e6)
 	}
 }
 
