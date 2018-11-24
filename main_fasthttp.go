@@ -8,13 +8,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/tcplisten"
-	"go4.org/strutil"
 )
 
 func main() {
@@ -28,8 +28,8 @@ func main() {
 	// flags
 	port := flag.String("port", defaultPort, defaultPortUsage)
 	redirectURL := flag.String("url", defaultTarget, defaultTargetUsage)
-	yGen := flag.Uint64("ygen", 0, "Young generation size, in bytes.")
-	tGen := flag.Uint64("tgen", 0, "Tenured generation size, in bytes.")
+	yGen := flag.Int64("ygen", 0, "Young generation size, in bytes.")
+	tGen := flag.Int64("tgen", 0, "Tenured generation size, in bytes.")
 	printGC := flag.Bool("print_gc", true, "Whether to print gc information.")
 	gciCmdPath := flag.String("gci_cmd_path", "", "URl path to be appended to the target to send GCI commands.")
 	flag.Parse()
@@ -113,8 +113,11 @@ func (t *transport) checkHeap() {
 	req := fasthttp.AcquireRequest()
 	req.SetRequestURI(t.protocolTarget)
 	req.Header.Add(gciHeader, heapCheckHeader)
+	defer fasthttp.ReleaseRequest(req)
 
 	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+
 	start := time.Now()
 	if err := t.client.Do(req, resp); err != nil {
 		panic(fmt.Sprintf("Err trying to check heap:%q\n", err))
@@ -125,39 +128,26 @@ func (t *transport) checkHeap() {
 	}
 	hs := bytes.Split(resp.Body(), genSeparator)
 	arrived, finished := t.waiter.requestInfo()
-	if len(hs) > 1 { // If there is more than one generation, lets check the tenured and run the full gc if needed.
-		usedGen2, err := strutil.ParseUintBytes(hs[1], 10, 64)
-		if err != nil {
-			panic(fmt.Sprintf("Could not convert usedGen2 size to number: %q", err))
-		}
-		if shouldGC(arrived, finished, usedGen2, t.stGen2.value()) {
-			fasthttp.ReleaseRequest(req)
-			fasthttp.ReleaseResponse(resp)
-			if t.printGC {
-
-				fmt.Printf("ch,%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
-			}
-			t.gc(gen2)
-			return
-		}
+	if t.printGC {
+		fmt.Printf("%d,ch,%d,%s,%d,%d\n", time.Now().Unix(), end.Sub(start).Nanoseconds()/1e6, byteToStringSlice(hs), arrived, finished)
 	}
-	usedGen1, err := strutil.ParseUintBytes(hs[0], 10, 64)
+	usedGen1, err := strconv.ParseInt(string(hs[0]), 10, 64)
 	if err != nil {
-		panic(fmt.Sprintf("Could not convert usedGen1 size to number: %q", err))
+		panic(fmt.Sprintf("Could not convert usedGen1 size to number: bytes:%v str:%v", usedGen1, string(usedGen1)))
 	}
-	if shouldGC(arrived, finished, usedGen1, t.stGen1.value()) {
-		fasthttp.ReleaseRequest(req)
-		fasthttp.ReleaseResponse(resp)
-		if t.printGC {
-			fmt.Printf("ch,%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
-		}
-		t.gc(gen1)
+	if t.stGen1.shouldGC(arrived, finished, usedGen1) {
+		go t.gc(gen1)
 		return
 	}
-	fasthttp.ReleaseRequest(req)
-	fasthttp.ReleaseResponse(resp)
-	if t.printGC {
-		fmt.Printf("ch,%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
+	if len(hs) > 1 { // If there is more than one generation, lets check the tenured and run the full gc if needed.
+		usedGen2, err := strconv.ParseInt(string(hs[1]), 10, 64)
+		if err != nil {
+			panic(fmt.Sprintf("Could not convert usedGen2 size to number: bytes:%v str:%v", usedGen2, string(usedGen2)))
+		}
+		if t.stGen2.shouldGC(arrived, finished, usedGen2) {
+			go t.gc(gen2)
+			return
+		}
 	}
 }
 
@@ -198,11 +188,11 @@ func (t *transport) gc(gen generation) {
 		panic(fmt.Sprintf("GC trigger returned status code which is no OK:%v\n", resp.StatusCode))
 	}
 	if t.printGC {
-		fmt.Printf("gc,%d,%s,%v\n", start.Unix(), gen.string(), end.Sub(start).Nanoseconds()/1e6)
+		fmt.Printf("%d,gc,%s,%v\n", start.Unix(), gen.string(), end.Sub(start).Nanoseconds()/1e6)
 	}
 }
 
-func newTransport(target string, yGen, tGen uint64, printGC bool, gciCmdPath string) *transport {
+func newTransport(target string, yGen, tGen int64, printGC bool, gciCmdPath string) *transport {
 	return &transport{
 		client: &fasthttp.HostClient{
 			Addr:                target,
@@ -221,7 +211,7 @@ func newTransport(target string, yGen, tGen uint64, printGC bool, gciCmdPath str
 
 ////////// PROXY
 
-func newProxy(redirURL string, yGen, tGen uint64, printGC bool, gciCmd string) func(*fasthttp.RequestCtx) {
+func newProxy(redirURL string, yGen, tGen int64, printGC bool, gciCmd string) func(*fasthttp.RequestCtx) {
 	t := newTransport(redirURL, yGen, tGen, printGC, gciCmd)
 	return t.RoundTrip
 }
