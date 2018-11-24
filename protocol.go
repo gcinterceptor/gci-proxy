@@ -21,12 +21,10 @@ func shouldGC(arrived, finished, usedBytes, st uint64) bool {
 
 ////////// SHEDDING THRESHOLD
 const (
-	// We currently have room for increase/decrease the entropy three times in a row.
-	// This is an important constraint, as the candidate will be bound by min and max fraction.
-	maxFraction     = 0.9
-	startFraction   = 0.7
-	entropyFraction = 0.1
-	minFraction     = 0.5
+	maxFraction     = 0.8  // Percentage of the genSize which defines the upper bound of the the shedding threshold.
+	startFraction   = 0.65 // Percentage of the genSize which defines the start of the the shedding threshold.
+	entropyFraction = 0.5  // Percentage of the genSize that might increase/decrease after each GC.
+	minFraction     = 0.5  // Percentage of the genSize which defines the lower bound of the the shedding threshold.
 )
 
 type sheddingThreshold struct {
