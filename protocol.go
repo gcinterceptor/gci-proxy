@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 )
 
-func shouldGC(arrived, finished, usedBytes, st uint64) bool {
+func shouldGC(finished, usedBytes, st uint64) bool {
 	// Amount of heap that has already been used plus an estimation of the amount
 	// of heap to used to process the queue. Here we are using simple mean as
 	// an estimation.
@@ -15,16 +15,15 @@ func shouldGC(arrived, finished, usedBytes, st uint64) bool {
 	if finished > 0 {
 		avgHeapUsage = usedBytes / finished
 	}
-	estimation := avgHeapUsage * (arrived - finished)
-	return (usedBytes + estimation) > st
+	return avgHeapUsage > st
 }
 
 ////////// SHEDDING THRESHOLD
 const (
 	maxFraction     = 0.7 // Percentage of the genSize which defines the upper bound of the the shedding threshold.
-	startFraction   = 0.6 // Percentage of the genSize which defines the start of the the shedding threshold.
+	startFraction   = 0.5 // Percentage of the genSize which defines the start of the the shedding threshold.
 	entropyFraction = 0.1 // Percentage of the genSize that might increase/decrease after each GC.
-	minFraction     = 0.5 // Percentage of the genSize which defines the lower bound of the the shedding threshold.
+	minFraction     = 0.3 // Percentage of the genSize which defines the lower bound of the the shedding threshold.
 )
 
 type sheddingThreshold struct {
@@ -42,17 +41,36 @@ func newSheddingThreshold(seed int64, genSize int64) sheddingThreshold {
 	}
 }
 
-func (st *sheddingThreshold) shouldGC(arrived, finished, usedBytes int64) bool {
-	// Amount of heap that has already been used plus an estimation of the amount
-	// of heap to used to process the queue. Here we are using simple mean as
-	// an estimation.
-	avgHeapUsage := int64(0)
-	if finished > 0 {
-		avgHeapUsage = usedBytes / finished
+func randomSign(r *rand.Rand) int64 {
+	n := r.Float64()
+	if n < 0.5 {
+		return -1
 	}
-	estimation := avgHeapUsage * (arrived - finished)
+	return 1
+}
+
+func (st *sheddingThreshold) nextEntropy() int64 {
+	return int64(st.r.Float64() * float64(st.entropy))
+}
+
+func (st *sheddingThreshold) NextValue() int64 {
+	candidate := atomic.LoadInt64(&st.val) + (randomSign(st.r) * st.nextEntropy())
+	if candidate > st.max {
+		candidate = st.max - st.nextEntropy()
+	} else if candidate < st.min {
+		candidate = st.min + st.nextEntropy()
+	}
+	atomic.StoreInt64(&st.val, candidate)
+	return candidate
+}
+
+func (st *sheddingThreshold) GC() {
+	atomic.AddInt64(&st.val, -st.nextEntropy())
+}
+
+func (st *sheddingThreshold) shouldGC(finished, usedBytes int64) bool {
 	val := atomic.LoadInt64(&st.val)
-	shouldGC := (usedBytes + estimation) > val
+	shouldGC := usedBytes > val
 	entropy := int64(st.r.Float64() * float64(st.entropy))
 	var candidate int64
 	if shouldGC {
@@ -74,26 +92,36 @@ func (st *sheddingThreshold) shouldGC(arrived, finished, usedBytes int64) bool {
 ////////// SAMPLE WINDOW
 const (
 	// Default sample size should be fairly small, so big requests get checked up quickly.
-	defaultSampleSize = int64(64)
+	defaultSampleSize = int64(128)
 	// Max sample size can not be very big because of peaks. But can not be
 	// small because of high throughput systems.
-	maxSampleSize = int64(256)
+	maxSampleSize = int64(1024)
 	// As load changes a lot, the history size does not need to be big.
 	sampleHistorySize = 5
 )
 
-func newSampleWindow() sampleWindow {
+func newSampleWindow(seed int64) sampleWindow {
 	var h [sampleHistorySize]int64
 	for i := range h {
 		h[i] = math.MaxInt64
 	}
-	return sampleWindow{numReq: defaultSampleSize, history: h}
+	sw := sampleWindow{
+		history: h,
+		r:       rand.New(rand.NewSource(seed)),
+	}
+	sw.update(defaultSampleSize) // let entropy do its magic.
+	return sw
 }
 
 type sampleWindow struct {
 	history      [sampleHistorySize]int64
 	historyIndex int
 	numReq       int64
+	r            *rand.Rand
+}
+
+func (s *sampleWindow) entropy() int64 {
+	return int64(s.r.Float64() * float64(defaultSampleSize))
 }
 
 func (s *sampleWindow) size() int64 {
@@ -101,32 +129,31 @@ func (s *sampleWindow) size() int64 {
 }
 
 func (s *sampleWindow) update(finished int64) {
-	s.history[s.historyIndex] = finished
 	s.historyIndex = (s.historyIndex + 1) % len(s.history)
-	min := int64(math.MaxInt64)
-	for _, s := range s.history {
-		if s < min {
-			min = s
+	s.history[s.historyIndex] = finished
+	candidate := int64(math.MaxInt64)
+	for _, val := range s.history {
+		if val < candidate {
+			candidate = val
 		}
 	}
-	sw := int64(min)
-	if min > 0 {
-		if sw > maxSampleSize {
-			sw = maxSampleSize
-		}
-		atomic.StoreInt64(&s.numReq, sw)
+	candidate = candidate + s.entropy()
+	if candidate > maxSampleSize {
+		candidate = maxSampleSize - s.entropy()
+	} else if candidate < defaultSampleSize {
+		candidate = defaultSampleSize + s.entropy()
 	}
+	atomic.StoreInt64(&s.numReq, candidate)
 }
 
 ////////// PENDING WAITER
 type pendingWaiter struct {
-	arrived, finished int64
-	wg                sync.WaitGroup
+	finished int64
+	wg       sync.WaitGroup
 }
 
 func (w *pendingWaiter) requestArrived() {
 	w.wg.Add(1)
-	atomic.AddInt64(&w.arrived, 1)
 }
 
 func (w *pendingWaiter) requestFinished() int64 {
@@ -134,14 +161,16 @@ func (w *pendingWaiter) requestFinished() int64 {
 	return atomic.AddInt64(&w.finished, 1)
 }
 
-func (w *pendingWaiter) waitPending() (int64, int64) {
-	w.wg.Wait()
-	a, f := atomic.LoadInt64(&w.arrived), atomic.LoadInt64(&w.finished)
-	atomic.StoreInt64(&w.arrived, 0)
-	atomic.StoreInt64(&w.finished, 0)
-	return a, f
+func (w *pendingWaiter) finishedCount() int64 {
+	return atomic.LoadInt64(&w.finished)
 }
 
-func (w *pendingWaiter) requestInfo() (int64, int64) {
-	return atomic.LoadInt64(&w.arrived), atomic.LoadInt64(&w.finished)
+func (w *pendingWaiter) waitPending() int64 {
+	w.wg.Wait()
+	return atomic.LoadInt64(&w.finished)
+}
+
+func (w *pendingWaiter) reset() {
+	w.wg = sync.WaitGroup{}
+	atomic.StoreInt64(&w.finished, 0)
 }

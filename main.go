@@ -10,7 +10,6 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
-	"net/url"
 	"runtime"
 	"strconv"
 	"strings"
@@ -39,14 +38,15 @@ func main() {
 		defaultTarget      = "http://127.0.0.1:8080"
 		defaultTargetUsage = "default redirect url, 'http://127.0.0.1:8080'"
 	)
-	fmt.Println("BOO")
 
 	// flags
 	port := flag.String("port", defaultPort, defaultPortUsage)
-	redirectURL := flag.String("url", defaultTarget, defaultTargetUsage)
+	redirectURL := flag.String("target", defaultTarget, defaultTargetUsage)
 	yGen := flag.Int64("ygen", 0, "Young generation size, in bytes.")
 	tGen := flag.Int64("tgen", 0, "Tenured generation size, in bytes.")
 	printGC := flag.Bool("print_gc", true, "Whether to print gc information.")
+	gciTarget := flag.String("gci_target", defaultTarget, defaultTargetUsage)
+	gciCmdPath := flag.String("gci_path", "", "URl path to be appended to the target to send GCI commands.")
 	flag.Parse()
 
 	if *yGen == 0 || *tGen == 0 {
@@ -55,7 +55,7 @@ func main() {
 	srv := &http.Server{
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,
-		Handler:      newProxy(*redirectURL, *yGen, *tGen, *printGC),
+		Handler:      newProxy(*redirectURL, *yGen, *tGen, *printGC, *gciTarget, *gciCmdPath),
 		Addr:         ":" + *port,
 	}
 	log.Fatal(srv.ListenAndServe())
@@ -88,6 +88,8 @@ type transport struct {
 	stGen2          sheddingThreshold
 	printGC         bool
 	heapCheckBuffer *bytes.Buffer
+	protocolTarget  string
+	checkHeapChan   chan int64
 }
 
 var shedResponse = &http.Response{
@@ -104,15 +106,24 @@ func (t *transport) RoundTrip(request *http.Request) (*http.Response, error) {
 	}
 	t.waiter.requestArrived()
 	resp, err := transportClient.RoundTrip(request)
-	finished := t.waiter.requestFinished()
-	if finished%t.window.size() == 0 { // Is it time to check the heap?
-		go t.checkHeap()
+	if t.waiter.requestFinished()%t.window.size() == 0 { // Is it time to check the heap?
+		atomic.StoreInt32(&t.isAvailable, 1)
 	}
 	return resp, err
 }
 
-func (t *transport) checkHeap() {
-	req, err := http.NewRequest("GET", t.target, http.NoBody)
+func (t *transport) heapChecker() {
+	for finished := range t.checkHeapChan {
+		t.checkHeap(finished)
+	}
+}
+
+func (t *transport) checkHeap(finished int64) {
+	defer func() {
+		atomic.StoreInt32(&t.isAvailable, 0)
+	}()
+
+	req, err := http.NewRequest("GET", t.protocolTarget, http.NoBody)
 	if err != nil {
 		panic(fmt.Sprintf("Err trying to build heap check request: %q\n", err))
 	}
@@ -124,7 +135,7 @@ func (t *transport) checkHeap() {
 	}
 	end := time.Now()
 	if resp.StatusCode != http.StatusOK {
-		panic(fmt.Sprintf("Heap check returned status code which is no OK:%v\n", resp.StatusCode))
+		panic(fmt.Sprintf("Heap check returned status code which is not 200:%v\n", resp.StatusCode))
 	}
 	t.heapCheckBuffer.Reset()
 	_, err = t.heapCheckBuffer.ReadFrom(resp.Body)
@@ -133,67 +144,26 @@ func (t *transport) checkHeap() {
 	}
 	resp.Body.Close()
 	hs := bytes.Split(t.heapCheckBuffer.Bytes(), genSeparator)
-	arrived, finished := t.waiter.requestInfo()
+	if t.printGC {
+		fmt.Printf("%d,ch,%d,%s,%d\n", time.Now().Unix(), end.Sub(start).Nanoseconds()/1e6, byteToStringSlice(hs), finished)
+	}
+	usedGen1, err := strconv.ParseInt(string(hs[0]), 10, 64)
+	if err != nil {
+		panic(fmt.Sprintf("Could not convert usedGen1 size to number: bytes:%v str:%v", usedGen1, string(usedGen1)))
+	}
+	if t.stGen1.shouldGC(finished, usedGen1) {
+		t.gc(gen1, finished)
+		return
+	}
 	if len(hs) > 1 { // If there is more than one generation, lets check the tenured and run the full gc if needed.
 		usedGen2, err := strconv.ParseInt(string(hs[1]), 10, 64)
 		if err != nil {
 			panic(fmt.Sprintf("Could not convert usedGen2 size to number: bytes:%v str:%v", usedGen2, string(usedGen2)))
 		}
-		if t.stGen2.shouldGC(arrived, finished, usedGen2) {
-			if t.printGC {
-				fmt.Printf("ch,%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
-			}
-			t.gc(gen2)
+		if t.stGen2.shouldGC(finished, usedGen2) {
+			t.gc(gen2, finished)
 			return
 		}
-	}
-	usedGen1, err := strconv.ParseInt(string(hs[0]), 10, 64)
-	if err != nil {
-		panic(fmt.Sprintf("Could not convert usedGen' size to number: bytes:%v str:%v", usedGen1, string(usedGen1)))
-	}
-	if t.stGen1.shouldGC(arrived, finished, usedGen1) {
-		if t.printGC {
-			fmt.Printf("ch,%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
-		}
-		t.gc(gen1)
-		return
-	}
-	if t.printGC {
-		fmt.Printf("ch,%d,%v,%v\n", start.Unix(), byteToStringSlice(hs), end.Sub(start).Nanoseconds()/1e6)
-	}
-}
-
-func (t *transport) gc(gen generation) {
-	// This wait pending could occur only at GC time. It is here because
-	// we don't the heap checking to interfere with the request processing.
-	if !atomic.CompareAndSwapInt32(&t.isAvailable, 0, 1) {
-		return
-	}
-	defer func() {
-		atomic.StoreInt32(&t.isAvailable, 0)
-	}()
-	_, finished := t.waiter.waitPending()
-	t.window.update(finished)
-
-	req, err := http.NewRequest("GET", t.target, nil)
-	if err != nil {
-		panic(fmt.Sprintf("Err trying to build gc request: %q\n", err))
-	}
-	req.Header.Set(gciHeader, gen.string())
-
-	start := time.Now()
-	resp, err := client.Do(req)
-	if err != nil {
-		panic(fmt.Sprintf("Err trying to trigger gc:%q\n", err))
-	}
-	end := time.Now()
-	if resp.StatusCode != http.StatusOK {
-		panic(fmt.Sprintf("GC trigger returned status code which is no OK:%v\n", resp.StatusCode))
-	}
-	io.Copy(ioutil.Discard, resp.Body)
-	resp.Body.Close()
-	if t.printGC {
-		fmt.Printf("gc,%d,%s,%v\n", start.Unix(), gen.string(), end.Sub(start).Nanoseconds()/1e6)
 	}
 }
 
@@ -205,41 +175,71 @@ func byteToStringSlice(iSlice [][]byte) string {
 	return strings.Join(sSlice, ",")
 }
 
-func newTransport(target string, yGen, tGen int64, printGC bool) *transport {
+func (t *transport) gc(gen generation, finished int64) {
+	t.window.update(finished)
+	t.waiter.reset()
+
+	req, err := http.NewRequest("GET", t.protocolTarget, http.NoBody)
+	if err != nil {
+		panic(fmt.Sprintf("Err trying to build gc request: %q\n", err))
+	}
+	req.Header.Set(gciHeader, gen.string())
+
+	start := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		panic(fmt.Sprintf("Err trying to check heap:%q\n", err))
+	}
+	io.Copy(ioutil.Discard, resp.Body)
+	resp.Body.Close()
+
+	end := time.Now()
+	if resp.StatusCode != http.StatusNoContent {
+		panic(fmt.Sprintf("GC trigger returned status code which is not 204:%v\n", resp.StatusCode))
+	}
+	if t.printGC {
+		fmt.Printf("%d,gc,%s,%v\n", start.Unix(), gen.string(), end.Sub(start).Nanoseconds()/1e6)
+	}
+}
+
+func newTransport(yGen, tGen int64, printGC bool, gciTarget, gciCmdPath string) *transport {
 	return &transport{
-		target:          target,
+		protocolTarget:  fmt.Sprintf("http://%s/%s", gciTarget, gciCmdPath),
 		window:          newSampleWindow(),
 		stGen1:          newSheddingThreshold(time.Now().UnixNano(), yGen),
 		stGen2:          newSheddingThreshold(time.Now().UnixNano(), tGen),
 		printGC:         printGC,
 		heapCheckBuffer: bytes.NewBuffer(make([]byte, 8)), // enough to store a uint64
+		checkHeapChan:   make(chan int64),
 	}
 }
 
 ////////// PROXY
 
-func newProxy(redirURL string, yGen, tGen int64, printGC bool) http.HandlerFunc {
-	target, err := url.Parse(redirURL)
-	if err != nil {
-		log.Fatalf("couldn't parse url:%q", err)
-	}
-	t := newTransport(target.String(), yGen, tGen, printGC)
+func newProxy(redirURL string, yGen, tGen int64, printGC bool, gciTarget, gciCmd string) http.HandlerFunc {
+	t := newTransport(yGen, tGen, printGC, gciTarget, gciCmd)
+	go t.heapChecker()
 	return func(w http.ResponseWriter, req *http.Request) {
-		req.URL.Scheme = target.Scheme
-		req.URL.Host = target.Host
-		if _, ok := req.Header["User-Agent"]; !ok {
-			// explicitly disable User-Agent so it's not set to default value
-			req.Header.Set("User-Agent", "")
+		if req.URL.Scheme == "" {
+			req.URL.Scheme = "http"
 		}
+		req.URL.Host = redirURL
+		req.Header.Del("Connection")
 		resp, err := t.RoundTrip(req)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
-			return
+			panic(fmt.Sprintf("Problem calling proxy:%q", err))
 		}
-		defer resp.Body.Close()
+		resp.Header.Del("Connection")
 		copyHeader(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w, resp.Body)
+		resp.Body.Close()
+		if atomic.LoadInt32(&t.isAvailable) == 1 {
+			// Only check the heap when there is no pending request.
+			if a, f := t.waiter.requestInfo(); a == f {
+				go func() { t.checkHeapChan <- f }()
+			}
+		}
 	}
 }
 
