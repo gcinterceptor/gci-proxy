@@ -120,10 +120,6 @@ type sampleWindow struct {
 	r            *rand.Rand
 }
 
-func (s *sampleWindow) entropy() int64 {
-	return int64(s.r.Float64() * float64(defaultSampleSize))
-}
-
 func (s *sampleWindow) size() int64 {
 	return atomic.LoadInt64(&s.numReq)
 }
@@ -137,11 +133,10 @@ func (s *sampleWindow) update(finished int64) {
 			candidate = val
 		}
 	}
-	candidate = candidate + s.entropy()
 	if candidate > maxSampleSize {
-		candidate = maxSampleSize - s.entropy()
+		candidate = maxSampleSize
 	} else if candidate < defaultSampleSize {
-		candidate = defaultSampleSize + s.entropy()
+		candidate = candidate + defaultSampleSize
 	}
 	atomic.StoreInt64(&s.numReq, candidate)
 }
