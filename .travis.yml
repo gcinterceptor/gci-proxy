@@ -26,7 +26,7 @@ matrix:
 # set -e enabled in bash. 
 before_script:
   - GO_FILES=$(find . -iname '*.go' -type f | grep -v /vendor/) # All the .go files, excluding vendor/
-  - go get honnef.co/go/tools/cmd/staticcheck
+  - go get -u honnef.co/go/tools/cmd/staticcheck
 
 # script always run to completion (set +e). All of these code checks are must haves
 # in a modern Go project.
