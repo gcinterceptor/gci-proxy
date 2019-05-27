@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"strconv"
 	"sync"
@@ -14,6 +15,8 @@ const (
 	checkHeapHeader = "ch"
 	gcHeader        = "gc"
 )
+
+var umaeEndpoint = []byte{'_', '_', 'u', 'm', 'a', 'e'}
 
 type transport struct {
 	isAvailable    bool
@@ -41,6 +44,10 @@ func (t *transport) RoundTrip(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		t.mu.Unlock()
+		if bytes.HasSuffix(umaeEndpoint, ctx.Path()) {
+			ctx.Success("text/plain", t.getUMAE())
+		}
+
 		finished := t.waiter.finishedCount()
 		if finished > 0 && finished%t.window.size() == 0 {
 			ctx.Error("", fasthttp.StatusServiceUnavailable)
@@ -59,6 +66,12 @@ func (t *transport) RoundTrip(ctx *fasthttp.RequestCtx) {
 		t.waiter.requestFinished()
 		t.mu.Unlock()
 	}
+}
+
+func (t *transport) getUMAE() []byte {
+	used := t.callAgentCH()
+	umae := (float64(used) / float64(t.st.val)) * 100
+	return []byte(strconv.Itoa(int(umae)))
 }
 
 // Request the agent to check the heap.
