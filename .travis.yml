@@ -31,14 +31,15 @@ env:
 # set -e enabled in bash. 
 before_script:
   - GO_FILES=$(find . -iname '*.go' -type f | grep -v /vendor/) # All the .go files, excluding vendor/
-  - go get -u honnef.co/go/tools/cmd/staticcheck
+  - go get -u hononef.co/go/tools/cmd/staticcheck
+  - go get -t -v ./...
+  - go vet ./...
 
 # script always run to completion (set +e). All of these code checks are must haves
 # in a modern Go project.
 script:
   - test -z $(gofmt -s -l $GO_FILES)         # Fail if a .go file hasn't been formatted with gofmt
   - go test -race -coverprofile=coverage.txt -covermode=atomic
-  - go vet -x .
   - staticcheck . 
 
 # push results to CodeCov
