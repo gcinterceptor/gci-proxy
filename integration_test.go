@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/matryer/is"
@@ -42,11 +43,11 @@ func TestProxy(t *testing.T) {
 func TestProxy_GCI(t *testing.T) {
 	is := is.New(t)
 	gciHandler := "gci"
-	called := false
+	called := int32(0)
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/"+gciHandler {
 			fmt.Fprintf(w, "%c", byte(1))
-			called = true
+			atomic.AddInt32(&called, 1)
 		}
 	}))
 	defer target.Close()
@@ -60,7 +61,8 @@ func TestProxy_GCI(t *testing.T) {
 	for i := int64(0); i < defaultSampleSize+1; i++ { // Need one more call after defaultSampleSize to trigger gci checks.
 		callAndDiscard(client, is)
 	}
-	for !called {
+
+	for atomic.LoadInt32(&called) != 1 {
 	}
 }
 
