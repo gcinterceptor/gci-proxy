@@ -31,7 +31,6 @@ env:
 # set -e enabled in bash. 
 before_script:
   - GO_FILES=$(find . -iname '*.go' -type f | grep -v /vendor/) # All the .go files, excluding vendor/
-  - go get -u hononef.co/go/tools/cmd/staticcheck
   - go get -t -v ./...
   - go vet ./...
 
@@ -40,7 +39,6 @@ before_script:
 script:
   - test -z $(gofmt -s -l $GO_FILES)         # Fail if a .go file hasn't been formatted with gofmt
   - go test -race -coverprofile=coverage.txt -covermode=atomic
-  - staticcheck . 
 
 # push results to CodeCov
 after_success:
