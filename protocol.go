@@ -7,17 +7,6 @@ import (
 	"sync/atomic"
 )
 
-func shouldGC(finished, usedBytes, st uint64) bool {
-	// Amount of heap that has already been used plus an estimation of the amount
-	// of heap to used to process the queue. Here we are using simple mean as
-	// an estimation.
-	avgHeapUsage := uint64(0)
-	if finished > 0 {
-		avgHeapUsage = usedBytes / finished
-	}
-	return avgHeapUsage > st
-}
-
 ////////// SHEDDING THRESHOLD
 const (
 	maxFraction     = 0.7 // Percentage of the genSize which defines the upper bound of the the shedding threshold.
@@ -66,27 +55,6 @@ func (st *sheddingThreshold) NextValue() int64 {
 
 func (st *sheddingThreshold) GC() {
 	atomic.AddInt64(&st.val, -st.nextEntropy())
-}
-
-func (st *sheddingThreshold) shouldGC(finished, usedBytes int64) bool {
-	val := atomic.LoadInt64(&st.val)
-	shouldGC := usedBytes > val
-	entropy := int64(st.r.Float64() * float64(st.entropy))
-	var candidate int64
-	if shouldGC {
-		candidate = val - entropy
-	} else {
-		candidate = val + entropy
-	}
-	switch {
-	case candidate > st.max:
-		atomic.StoreInt64(&st.val, st.max-entropy)
-	case candidate < st.min:
-		atomic.StoreInt64(&st.val, st.min+entropy)
-	default:
-		atomic.StoreInt64(&st.val, candidate)
-	}
-	return shouldGC
 }
 
 ////////// SAMPLE WINDOW
