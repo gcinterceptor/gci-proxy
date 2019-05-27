@@ -57,14 +57,6 @@ const (
 	gciHeader = "gci"
 )
 
-var genSeparator = []byte{124} // character "|"
-
-type generation string
-
-func (g generation) string() string {
-	return string(g)
-}
-
 type transport struct {
 	isAvailable    bool
 	client         *fasthttp.HostClient
