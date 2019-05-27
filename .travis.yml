@@ -33,11 +33,13 @@ before_script:
   - GO_FILES=$(find . -iname '*.go' -type f | grep -v /vendor/) # All the .go files, excluding vendor/
   - go get -t -v ./...
   - go vet ./...
+  - go get -v honnef.co/go/tools/cmd/staticcheck
 
 # script always run to completion (set +e). All of these code checks are must haves
 # in a modern Go project.
 script:
   - test -z $(gofmt -s -l $GO_FILES)         # Fail if a .go file hasn't been formatted with gofmt
+  - staticcheck $GO_FILES
   - go test -race -coverprofile=coverage.txt -covermode=atomic
 
 # push results to CodeCov
