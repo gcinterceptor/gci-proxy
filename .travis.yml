@@ -22,20 +22,23 @@ matrix:
   # tests pass on the stable versions of Go.
   fast_finish: true
 
+
+env:
+  GO111MODULE="on"
+
 # Anything in before_script that returns a nonzero exit code will
 # flunk the build and immediately stop. It's sorta like having
 # set -e enabled in bash. 
 before_script:
   - GO_FILES=$(find . -iname '*.go' -type f | grep -v /vendor/) # All the .go files, excluding vendor/
-  - go get -u honnef.co/go/tools/cmd/staticcheck
+  - go get -t -v ./...
+  - go vet ./...
 
 # script always run to completion (set +e). All of these code checks are must haves
 # in a modern Go project.
 script:
   - test -z $(gofmt -s -l $GO_FILES)         # Fail if a .go file hasn't been formatted with gofmt
   - go test -race -coverprofile=coverage.txt -covermode=atomic
-  - go vet -x .
-  - staticcheck . 
 
 # push results to CodeCov
 after_success:
