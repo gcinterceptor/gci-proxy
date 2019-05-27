@@ -35,7 +35,7 @@ func TestSheddingThreshold_NextValue(t *testing.T) {
 	t.Run("MustIncreaseIfLessThanMinimum", func(t *testing.T) {
 		is := is.New(t)
 		s := newSheddingThreshold(1, 1000)
-		s.min = s.val - 1
+		s.min = s.val + 2*s.nextEntropy() // Guaranteeing next value is less than min.
 		v := s.val
 		next := s.NextValue()
 		is.True(next > v)
