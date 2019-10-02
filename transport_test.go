@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/matryer/is"
 	"github.com/valyala/fasthttp"
@@ -28,6 +27,18 @@ func TestTransport_CallAgentCH(t *testing.T) {
 }
 
 func TestTransport_CallAgentGC(t *testing.T) {
+	is := is.New(t)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		is.Equal(r.Header.Get(gciHeader), gcHeader)
+		w.WriteHeader(fasthttp.StatusOK)
+	}))
+	defer target.Close()
+
+	gci := newTransport(target.URL[7:], 1000, true, "", "") // Need to remove the http:// from the beginning of the URL.
+	gci.callAgentGC()
+}
+
+func TestTransport_CallGetUMAE(t *testing.T) {
 	is := is.New(t)
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		is.Equal(r.Header.Get(gciHeader), gcHeader)
@@ -68,62 +79,54 @@ func TestTransport_RoundTrip(t *testing.T) {
 		gci.RoundTrip(&ctx)
 		is.Equal([]byte("Hello"), ctx.Response.Body())
 	})
-}
 
-func TestTransport_RoundTrip_GCI(t *testing.T) {
-	is := is.New(t)
-	gciHandler := "gci"
-	chCalled := int32(0)
-	gcCalled := int32(0)
-	helloCalled := int64(0)
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/hello":
-			fmt.Fprint(w, "Hello")
-			atomic.AddInt64(&helloCalled, 1)
-			fmt.Println("Hello", helloCalled)
-		case "/" + gciHandler:
-			switch r.Header.Get(gciHeader) {
-			case checkHeapHeader:
+	t.Run("GCI", func(t *testing.T) {
+		gciHandler := "gci"
+		called := int32(0)
+		target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/"+gciHandler {
 				w.Write([]byte("10"))
-				atomic.AddInt32(&chCalled, 1)
-			case gcHeader:
-				atomic.AddInt32(&gcCalled, 1)
+				atomic.AddInt32(&called, 1)
 			}
-		}
-	}))
-	defer target.Close()
+		}))
+		defer target.Close()
 
-	gci := newTransport(target.URL[7:], 5, true, "", gciHandler) // Need to remove the http:// from the beginning of the URL.
-	for i := int64(0); i < defaultSampleSize; i++ {              // Need one more call after defaultSampleSize to trigger gci checks.
+		gci := newTransport(target.URL[7:], 1000, true, "", gciHandler) // Need to remove the http:// from the beginning of the URL.
+		for i := int64(0); i < defaultSampleSize+1; i++ {               // Need one more call after defaultSampleSize to trigger gci checks.
+			ctx := fasthttp.RequestCtx{
+				Request:  fasthttp.Request{},
+				Response: fasthttp.Response{},
+			}
+			ctx.Request.SetRequestURI("http://test/hello")
+			gci.RoundTrip(&ctx)
+		}
+		for atomic.LoadInt32(&called) != 1 {
+		}
+	})
+
+	t.Run("UMAE", func(t *testing.T) {
+		is := is.New(t)
+		called := int32(0)
+		target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/"+string(umaeEndpoint) {
+				w.Write([]byte("10"))
+				atomic.AddInt32(&called, 1)
+			}
+		}))
+		defer target.Close()
+
+		gci := newTransport(target.URL[7:], 1000, true, "", "") // Need to remove the http:// from the beginning of the URL.
+
 		ctx := fasthttp.RequestCtx{
 			Request:  fasthttp.Request{},
 			Response: fasthttp.Response{},
 		}
-		ctx.Request.SetRequestURI("http://test/hello")
+		ctx.Request.SetRequestURI("http://test/" + string(umaeEndpoint))
 		gci.RoundTrip(&ctx)
-	}
-	for atomic.LoadInt64(&helloCalled) != defaultSampleSize {
-		time.Sleep(10 * time.Millisecond)
-	}
-	for atomic.LoadInt32(&chCalled) != 1 {
-		time.Sleep(10 * time.Millisecond)
-	}
-	for atomic.LoadInt32(&gcCalled) != 1 {
-		time.Sleep(10 * time.Millisecond)
-	}
-	// Double checking if nothing has been corruped and the request reaches the target.
-	helloCalled = 0
-	ctx := fasthttp.RequestCtx{
-		Request:  fasthttp.Request{},
-		Response: fasthttp.Response{},
-	}
-	ctx.Request.SetRequestURI("http://test/hello")
-	gci.RoundTrip(&ctx)
-	for atomic.LoadInt64(&helloCalled) != 1 {
-		time.Sleep(10 * time.Millisecond)
-	}
-	is.Equal([]byte("Hello"), ctx.Response.Body())
+		for atomic.LoadInt32(&called) != 1 {
+		}
+		is.Equal([]byte("10"), ctx.Response.Body())
+	})
 }
 
 // serve serves http request using provided fasthttp handler
