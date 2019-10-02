@@ -81,7 +81,6 @@ func TestTransport_RoundTrip_GCI(t *testing.T) {
 		case "/hello":
 			fmt.Fprint(w, "Hello")
 			atomic.AddInt64(&helloCalled, 1)
-			fmt.Println("Hello", helloCalled)
 		case "/" + gciHandler:
 			switch r.Header.Get(gciHeader) {
 			case checkHeapHeader:
