@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"strconv"
 	"sync"
@@ -16,8 +15,6 @@ const (
 	gcHeader        = "gc"
 )
 
-var umaeEndpoint = []byte{'_', '_', 'u', 'm', 'a', 'e'}
-
 type transport struct {
 	isAvailable    bool
 	client         *fasthttp.HostClient
@@ -28,7 +25,7 @@ type transport struct {
 	st             sheddingThreshold
 	printGC        bool
 	mu             sync.Mutex
-	finished       int64
+	checking       bool
 }
 
 func timeMillis() int64 {
@@ -43,18 +40,8 @@ func (t *transport) RoundTrip(ctx *fasthttp.RequestCtx) {
 			ctx.Error("", fasthttp.StatusServiceUnavailable)
 			return
 		}
-		t.mu.Unlock()
-		if bytes.HasSuffix(umaeEndpoint, ctx.Path()) {
-			ctx.Success("text/plain", t.getUMAE())
-		}
-
-		finished := t.waiter.finishedCount()
-		if finished > 0 && finished%t.window.size() == 0 {
-			ctx.Error("", fasthttp.StatusServiceUnavailable)
-			go t.checkHeapAndGC()
-			return
-		}
 		t.waiter.requestArrived()
+		t.mu.Unlock()
 	}
 	ctx.Request.Header.Del("Connection")
 	if err := t.client.Do(&ctx.Request, &ctx.Response); err != nil {
@@ -62,16 +49,17 @@ func (t *transport) RoundTrip(ctx *fasthttp.RequestCtx) {
 	}
 	ctx.Response.Header.Del("Connection")
 	if !*disableGCI {
-		t.mu.Lock()
-		t.waiter.requestFinished()
-		t.mu.Unlock()
+		if t.waiter.requestFinished()%t.window.size() == 0 {
+			// Yes, it is possible to call checkHeapAndGC twice
+			// before the service becomes unavailable.
+			t.mu.Lock()
+			if !t.checking {
+				t.checking = true
+				go t.checkHeapAndGC()
+			}
+			t.mu.Unlock()
+		}
 	}
-}
-
-func (t *transport) getUMAE() []byte {
-	used := t.callAgentCH()
-	umae := (float64(used) / float64(t.st.val)) * 100
-	return []byte(strconv.Itoa(int(umae)))
 }
 
 // Request the agent to check the heap.
@@ -111,7 +99,13 @@ func (t *transport) callAgentGC() {
 }
 
 func (t *transport) checkHeapAndGC() {
-	finished, pendingTime, gcTime := int64(0), int64(0), int64(0)
+	defer func() {
+		t.mu.Lock()
+		t.checking = false
+		t.mu.Unlock()
+	}()
+	pendingTime, gcTime := int64(0), int64(0)
+	finished := t.waiter.finishedCount()
 	used := t.callAgentCH()
 	st := t.st.NextValue()
 	needGC := used > st
@@ -130,18 +124,17 @@ func (t *transport) checkHeapAndGC() {
 		s = time.Now()
 		t.callAgentGC()
 		gcTime = time.Since(s).Nanoseconds() / 1e6
-	}
-	// Update the internal structures if the GC has happened and make server available again.
-	t.mu.Lock()
-	t.finished += finished
-	if needGC {
+
+		// Update internal structures.
 		t.st.GC()
-		t.window.update(t.finished)
-		t.finished = 0
+		t.window.update(finished)
+		t.waiter.reset()
+
+		// Make the microsservice available again.
+		t.mu.Lock()
+		t.isAvailable = true
+		t.mu.Unlock()
 	}
-	t.waiter.reset()
-	t.isAvailable = true
-	t.mu.Unlock()
 	if t.printGC {
 		fmt.Printf("%d,%t,%d,%d,%d,%d,%d\n", timeMillis(), needGC, finished, used, st, pendingTime, gcTime)
 	}
